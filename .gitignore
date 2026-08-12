@@ -1,0 +1,8 @@
+# Build outputs (Makefile targets)
+/main
+/lex
+*.o
+*.dSYM/
+
+# OS cruft
+.DS_Store
