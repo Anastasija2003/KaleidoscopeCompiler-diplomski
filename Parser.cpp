@@ -1,8 +1,11 @@
 #include "Parser.h"
 
+#include "llvm/IR/Function.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <cstdio>
 
-Parser::Parser(Lexer &Lex) : Lex(Lex) {
+Parser::Parser(Lexer &Lex, CodeGenContext &CG) : Lex(Lex), CG(CG) {
   // Lowest precedence first; '*' binds tightest.
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
@@ -192,24 +195,40 @@ std::unique_ptr<PrototypeAST> Parser::parseExtern() {
 }
 
 void Parser::handleDefinition() {
-  if (parseDefinition()) {
-    fprintf(stderr, "Parsed a function definition.\n");
+  if (auto FnAST = parseDefinition()) {
+    if (auto *FnIR = FnAST->codegen(CG)) {
+      fprintf(stderr, "Read function definition:");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+    }
   } else {
     getNextToken(); // skip token for error recovery
   }
 }
 
 void Parser::handleExtern() {
-  if (parseExtern()) {
-    fprintf(stderr, "Parsed an extern\n");
+  if (auto ProtoAST = parseExtern()) {
+    if (auto *FnIR = ProtoAST->codegen(CG)) {
+      fprintf(stderr, "Read extern: ");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+    }
   } else {
     getNextToken();
   }
 }
 
 void Parser::handleTopLevelExpression() {
-  if (parseTopLevelExpr()) {
-    fprintf(stderr, "Parsed a top-level expr\n");
+  // Evaluate a top-level expression into an anonymous function.
+  if (auto FnAST = parseTopLevelExpr()) {
+    if (auto *FnIR = FnAST->codegen(CG)) {
+      fprintf(stderr, "Read top-level expression:");
+      FnIR->print(llvm::errs());
+      fprintf(stderr, "\n");
+
+      // Don't leave the anonymous wrapper in the module.
+      FnIR->eraseFromParent();
+    }
   } else {
     getNextToken();
   }
