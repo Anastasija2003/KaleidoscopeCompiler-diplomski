@@ -1,11 +1,15 @@
 #include "Parser.h"
 
+#include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdio>
 
-Parser::Parser(Lexer &Lex, CodeGenContext &CG) : Lex(Lex), CG(CG) {
+using namespace llvm::orc;
+
+Parser::Parser(Lexer &Lex, CodeGenContext &CG, KaleidoscopeJIT &JIT)
+    : Lex(Lex), CG(CG), JIT(JIT) {
   // Lowest precedence first; '*' binds tightest.
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
@@ -200,6 +204,13 @@ void Parser::handleDefinition() {
       fprintf(stderr, "Read function definition:");
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
+
+      // Hand the finished module off to the JIT, then start a fresh one --
+      // this is what lets the *next* def/extern/expression redeclare or
+      // even redefine names from this one (see getFunction() in
+      // CodeGen.cpp).
+      ExitOnErr(JIT.addModule(CG.takeModule()));
+      CG.resetModule(JIT.getDataLayout());
     }
   } else {
     getNextToken(); // skip token for error recovery
@@ -212,6 +223,9 @@ void Parser::handleExtern() {
       fprintf(stderr, "Read extern: ");
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
+      // Just a declaration -- nothing to hand to the JIT yet. Keep the
+      // prototype around so a later call to this name can be resolved.
+      CG.getFunctionProtos()[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
     getNextToken();
@@ -219,15 +233,23 @@ void Parser::handleExtern() {
 }
 
 void Parser::handleTopLevelExpression() {
-  // Evaluate a top-level expression into an anonymous function.
+  // Evaluate a top-level expression into an anonymous function, JIT it,
+  // run it, and print the result -- no IR is printed for this case.
   if (auto FnAST = parseTopLevelExpr()) {
-    if (auto *FnIR = FnAST->codegen(CG)) {
-      fprintf(stderr, "Read top-level expression:");
-      FnIR->print(llvm::errs());
-      fprintf(stderr, "\n");
+    if (FnAST->codegen(CG)) {
+      // Track this module's JIT'd memory separately so it can be freed
+      // right after we're done calling it (it's anonymous and one-shot).
+      auto RT = JIT.getMainJITDylib().createResourceTracker();
 
-      // Don't leave the anonymous wrapper in the module.
-      FnIR->eraseFromParent();
+      ExitOnErr(JIT.addModule(CG.takeModule(), RT));
+      CG.resetModule(JIT.getDataLayout());
+
+      auto ExprSymbol = ExitOnErr(JIT.lookup("__anon_expr"));
+
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      fprintf(stderr, "Evaluated to %f\n", FP());
+
+      ExitOnErr(RT->remove());
     }
   } else {
     getNextToken();

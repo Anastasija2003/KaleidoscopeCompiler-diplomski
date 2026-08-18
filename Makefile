@@ -15,7 +15,7 @@ COMMON_SRCS := Lexer.cpp
 COMMON_HDRS := Lexer.h AST.h Parser.h
 
 MAIN_SRCS := main.cpp Parser.cpp CodeGen.cpp $(COMMON_SRCS)
-MAIN_HDRS := $(COMMON_HDRS) CodeGenContext.h
+MAIN_HDRS := $(COMMON_HDRS) CodeGenContext.h KaleidoscopeJIT.h
 LEX_SRCS := lex_main.cpp $(COMMON_SRCS)
 
 MAIN_TARGET := main

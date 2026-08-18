@@ -16,9 +16,20 @@
 
 using namespace llvm;
 
-CodeGenContext::CodeGenContext(const std::string &ModuleName) {
+CodeGenContext::CodeGenContext(std::string ModuleName, const DataLayout &DL)
+    : ModuleName(std::move(ModuleName)) {
+  resetModule(DL);
+}
+
+llvm::orc::ThreadSafeModule CodeGenContext::takeModule() {
+  return llvm::orc::ThreadSafeModule(std::move(TheModule),
+                                      std::move(TheContext));
+}
+
+void CodeGenContext::resetModule(const DataLayout &DL) {
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>(ModuleName, *TheContext);
+  TheModule->setDataLayout(DL);
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 
   TheFPM = std::make_unique<FunctionPassManager>();
@@ -49,6 +60,23 @@ CodeGenContext::CodeGenContext(const std::string &ModuleName) {
 // where the "no value" sentinel is a null Value* instead of a null AST node.
 static Value *LogErrorV(const char *Str) {
   fprintf(stderr, "Error: %s\n", Str);
+  return nullptr;
+}
+
+// getFunction - Look up Name as a function in the module currently being
+// built. If it isn't there (e.g. this is a fresh module started after the
+// previous one was handed off to the JIT), fall back to CG's registry of
+// every prototype seen so far and (re)materialize a declaration for it
+// into the current module on demand.
+static Function *getFunction(CodeGenContext &CG, const std::string &Name) {
+  if (auto *F = CG.getModule().getFunction(Name))
+    return F;
+
+  auto &Protos = CG.getFunctionProtos();
+  auto FI = Protos.find(Name);
+  if (FI != Protos.end())
+    return FI->second->codegen(CG);
+
   return nullptr;
 }
 
@@ -88,7 +116,7 @@ Value *BinaryExprAST::codegen(CodeGenContext &CG) {
 }
 
 Value *CallExprAST::codegen(CodeGenContext &CG) {
-  Function *CalleeF = CG.getModule().getFunction(Callee);
+  Function *CalleeF = getFunction(CG, Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
@@ -122,18 +150,17 @@ Function *PrototypeAST::codegen(CodeGenContext &CG) {
 }
 
 Function *FunctionAST::codegen(CodeGenContext &CG) {
-  // Reuse an existing forward declaration (from a prior 'extern') if there
-  // is one, instead of redeclaring the function.
-  Function *TheFunction = CG.getModule().getFunction(Proto->getName());
-
-  if (!TheFunction)
-    TheFunction = Proto->codegen(CG);
-
+  // Hand the prototype's ownership to CG's registry (it needs to outlive
+  // this module -- a later module may need to redeclare or, for a 'def',
+  // redefine this same function), keeping a reference for use below. This
+  // is also what makes redefinition possible: getFunction() below always
+  // (re)materializes the declaration into *this* fresh module, so there's
+  // no stale "already has a body" Function left over to reject against.
+  auto &P = *Proto;
+  CG.getFunctionProtos()[Proto->getName()] = std::move(Proto);
+  Function *TheFunction = getFunction(CG, P.getName());
   if (!TheFunction)
     return nullptr;
-
-  if (!TheFunction->empty())
-    return static_cast<Function *>(LogErrorV("Function cannot be redefined."));
 
   BasicBlock *BB = BasicBlock::Create(CG.getContext(), "entry", TheFunction);
   CG.getBuilder().SetInsertPoint(BB);

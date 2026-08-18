@@ -2,14 +2,17 @@
 
 #include "AST.h"
 #include "CodeGenContext.h"
+#include "KaleidoscopeJIT.h"
 #include "Lexer.h"
+
+#include "llvm/Support/Error.h"
 
 #include <map>
 #include <memory>
 
 class Parser {
 public:
-  Parser(Lexer &Lex, CodeGenContext &CG);
+  Parser(Lexer &Lex, CodeGenContext &CG, llvm::orc::KaleidoscopeJIT &JIT);
 
   void run();
 
@@ -40,6 +43,8 @@ private:
 
   Lexer &Lex;
   CodeGenContext &CG;
+  llvm::orc::KaleidoscopeJIT &JIT;
+  llvm::ExitOnError ExitOnErr;
   int CurTok = 0;
   std::map<char, int> BinopPrecedence;
 };
