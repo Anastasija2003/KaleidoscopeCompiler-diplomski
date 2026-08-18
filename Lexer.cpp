@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <unordered_map>
 
 int Lexer::getTok() {
   while (isspace(LastChar))
@@ -28,14 +29,19 @@ int Lexer::getTok() {
 }
 
 int Lexer::lexIdentifier() {
+  static const std::unordered_map<std::string, int> Keywords = {
+      {"def", tok_def}, {"extern", tok_extern}, {"if", tok_if},
+      {"then", tok_then}, {"else", tok_else}, {"for", tok_for},
+      {"in", tok_in},
+  };
+
   IdentifierStr = static_cast<char>(LastChar);
   while (isalnum((LastChar = readChar())))
     IdentifierStr += static_cast<char>(LastChar);
 
-  if (IdentifierStr == "def")
-    return tok_def;
-  if (IdentifierStr == "extern")
-    return tok_extern;
+  auto It = Keywords.find(IdentifierStr);
+  if (It != Keywords.end())
+    return It->second;
   return tok_identifier;
 }
 

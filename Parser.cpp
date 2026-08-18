@@ -93,7 +93,83 @@ std::unique_ptr<ExprAST> Parser::parseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-// primary ::= identifierexpr | numberexpr | parenexpr
+// ifexpr ::= 'if' expression 'then' expression 'else' expression
+std::unique_ptr<ExprAST> Parser::parseIfExpr() {
+  getNextToken(); // eat if
+
+  auto Cond = parseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurTok != tok_then)
+    return logError("expected then");
+  getNextToken(); // eat then
+
+  auto Then = parseExpression();
+  if (!Then)
+    return nullptr;
+
+  if (CurTok != tok_else)
+    return logError("expected else");
+  getNextToken(); // eat else
+
+  auto Else = parseExpression();
+  if (!Else)
+    return nullptr;
+
+  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+                                      std::move(Else));
+}
+
+// forexpr ::= 'for' identifier '=' expr ',' expr (',' expr)? 'in' expression
+std::unique_ptr<ExprAST> Parser::parseForExpr() {
+  getNextToken(); // eat for
+
+  if (CurTok != tok_identifier)
+    return logError("expected identifier after for");
+
+  std::string IdName = Lex.getIdentifier();
+  getNextToken(); // eat identifier
+
+  if (CurTok != '=')
+    return logError("expected '=' after for");
+  getNextToken(); // eat '='
+
+  auto Start = parseExpression();
+  if (!Start)
+    return nullptr;
+  if (CurTok != ',')
+    return logError("expected ',' after for start value");
+  getNextToken();
+
+  auto End = parseExpression();
+  if (!End)
+    return nullptr;
+
+  // The step value is optional.
+  std::unique_ptr<ExprAST> Step;
+  if (CurTok == ',') {
+    getNextToken();
+    Step = parseExpression();
+    if (!Step)
+      return nullptr;
+  }
+
+  if (CurTok != tok_in)
+    return logError("expected 'in' after for");
+  getNextToken(); // eat 'in'
+
+  auto Body = parseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<ForExprAST>(IdName, std::move(Start),
+                                       std::move(End), std::move(Step),
+                                       std::move(Body));
+}
+
+// primary
+//   ::= identifierexpr | numberexpr | parenexpr | ifexpr | forexpr
 std::unique_ptr<ExprAST> Parser::parsePrimary() {
   switch (CurTok) {
   default:
@@ -104,6 +180,10 @@ std::unique_ptr<ExprAST> Parser::parsePrimary() {
     return parseNumberExpr();
   case '(':
     return parseParenExpr();
+  case tok_if:
+    return parseIfExpr();
+  case tok_for:
+    return parseForExpr();
   }
 }
 

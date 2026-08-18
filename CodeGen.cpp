@@ -2,9 +2,11 @@
 #include "CodeGenContext.h"
 
 #include "llvm/ADT/APFloat.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -131,6 +133,142 @@ Value *CallExprAST::codegen(CodeGenContext &CG) {
   }
 
   return CG.getBuilder().CreateCall(CalleeF, ArgsV, "calltmp");
+}
+
+Value *IfExprAST::codegen(CodeGenContext &CG) {
+  Value *CondV = Cond->codegen(CG);
+  if (!CondV)
+    return nullptr;
+
+  IRBuilder<> &Builder = CG.getBuilder();
+  LLVMContext &Context = CG.getContext();
+
+  // Convert condition to a bool by comparing non-equal to 0.0.
+  CondV = Builder.CreateFCmpONE(CondV, ConstantFP::get(Context, APFloat(0.0)),
+                                 "ifcond");
+
+  Function *TheFunction = Builder.GetInsertBlock()->getParent();
+
+  // Create blocks for the then/else cases. Insert the 'then' block at the
+  // end of the function; 'else' and 'merge' are inserted once we know
+  // where codegen-ing the previous block left off.
+  BasicBlock *ThenBB = BasicBlock::Create(Context, "then", TheFunction);
+  BasicBlock *ElseBB = BasicBlock::Create(Context, "else");
+  BasicBlock *MergeBB = BasicBlock::Create(Context, "ifcont");
+
+  Builder.CreateCondBr(CondV, ThenBB, ElseBB);
+
+  // Emit the 'then' value.
+  Builder.SetInsertPoint(ThenBB);
+  Value *ThenV = Then->codegen(CG);
+  if (!ThenV)
+    return nullptr;
+
+  Builder.CreateBr(MergeBB);
+  // Codegen of 'Then' can change the current block; update ThenBB for the
+  // PHI below.
+  ThenBB = Builder.GetInsertBlock();
+
+  // Emit the 'else' block.
+  TheFunction->insert(TheFunction->end(), ElseBB);
+  Builder.SetInsertPoint(ElseBB);
+  Value *ElseV = Else->codegen(CG);
+  if (!ElseV)
+    return nullptr;
+
+  Builder.CreateBr(MergeBB);
+  ElseBB = Builder.GetInsertBlock();
+
+  // Emit the merge block.
+  TheFunction->insert(TheFunction->end(), MergeBB);
+  Builder.SetInsertPoint(MergeBB);
+  PHINode *PN = Builder.CreatePHI(Type::getDoubleTy(Context), 2, "iftmp");
+  PN->addIncoming(ThenV, ThenBB);
+  PN->addIncoming(ElseV, ElseBB);
+  return PN;
+}
+
+// Lowers to:
+//   ...
+//   start = startexpr
+//   goto loop
+// loop:
+//   variable = phi [start, loopheader], [nextvariable, loopend]
+//   ...
+//   bodyexpr
+//   ...
+// loopend:
+//   step = stepexpr
+//   nextvariable = variable + step
+//   endcond = endexpr
+//   br endcond, loop, afterloop
+// afterloop:
+Value *ForExprAST::codegen(CodeGenContext &CG) {
+  Value *StartVal = Start->codegen(CG);
+  if (!StartVal)
+    return nullptr;
+
+  IRBuilder<> &Builder = CG.getBuilder();
+  LLVMContext &Context = CG.getContext();
+
+  Function *TheFunction = Builder.GetInsertBlock()->getParent();
+  BasicBlock *PreheaderBB = Builder.GetInsertBlock();
+  BasicBlock *LoopBB = BasicBlock::Create(Context, "loop", TheFunction);
+
+  // Fall through from the current block into the loop.
+  Builder.CreateBr(LoopBB);
+  Builder.SetInsertPoint(LoopBB);
+
+  PHINode *Variable =
+      Builder.CreatePHI(Type::getDoubleTy(Context), 2, VarName);
+  Variable->addIncoming(StartVal, PreheaderBB);
+
+  // The loop variable shadows any outer variable of the same name for the
+  // duration of the loop; save whatever it shadows so it can be restored
+  // afterward.
+  auto &NamedValues = CG.getNamedValues();
+  Value *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Variable;
+
+  // The body's value is discarded -- only its side effects (e.g. a call)
+  // matter -- but a codegen failure still aborts the loop.
+  if (!Body->codegen(CG))
+    return nullptr;
+
+  Value *StepVal = nullptr;
+  if (Step) {
+    StepVal = Step->codegen(CG);
+    if (!StepVal)
+      return nullptr;
+  } else {
+    StepVal = ConstantFP::get(Context, APFloat(1.0));
+  }
+
+  Value *NextVar = Builder.CreateFAdd(Variable, StepVal, "nextvar");
+
+  Value *EndCond = End->codegen(CG);
+  if (!EndCond)
+    return nullptr;
+
+  EndCond = Builder.CreateFCmpONE(
+      EndCond, ConstantFP::get(Context, APFloat(0.0)), "loopcond");
+
+  BasicBlock *LoopEndBB = Builder.GetInsertBlock();
+  BasicBlock *AfterBB =
+      BasicBlock::Create(Context, "afterloop", TheFunction);
+
+  Builder.CreateCondBr(EndCond, LoopBB, AfterBB);
+  Builder.SetInsertPoint(AfterBB);
+
+  Variable->addIncoming(NextVar, LoopEndBB);
+
+  if (OldVal)
+    NamedValues[VarName] = OldVal;
+  else
+    NamedValues.erase(VarName);
+
+  // A for expression always evaluates to 0.0.
+  return Constant::getNullValue(Type::getDoubleTy(Context));
 }
 
 Function *PrototypeAST::codegen(CodeGenContext &CG) {
