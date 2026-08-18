@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <memory>
 #include <string>
 #include <utility>
@@ -39,6 +40,18 @@ class VariableExprAST : public ExprAST {
 
 public:
   explicit VariableExprAST(std::string Name) : Name(std::move(Name)) {}
+
+  llvm::Value *codegen(CodeGenContext &CG) override;
+};
+
+// UnaryExprAST - Expression class for a unary operator.
+class UnaryExprAST : public ExprAST {
+  char Opcode;
+  std::unique_ptr<ExprAST> Operand;
+
+public:
+  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
+      : Opcode(Opcode), Operand(std::move(Operand)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -96,17 +109,33 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// PrototypeAST - Represents the "prototype" for a function: its name and
-// its argument names (which implicitly gives the argument count).
+// PrototypeAST - Represents the "prototype" for a function: its name, its
+// argument names (which implicitly gives the argument count), and --
+// since a user-defined operator is just a function with a special name
+// ("binary<op>"/"unary<op>") -- whether it's one, and at what precedence.
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+  bool IsOperator;
+  unsigned Precedence; // Precedence if this is a binary operator.
 
 public:
-  PrototypeAST(std::string Name, std::vector<std::string> Args)
-      : Name(std::move(Name)), Args(std::move(Args)) {}
+  PrototypeAST(std::string Name, std::vector<std::string> Args,
+               bool IsOperator = false, unsigned Precedence = 0)
+      : Name(std::move(Name)), Args(std::move(Args)), IsOperator(IsOperator),
+        Precedence(Precedence) {}
 
   const std::string &getName() const { return Name; }
+
+  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+
+  char getOperatorName() const {
+    assert(isUnaryOp() || isBinaryOp());
+    return Name[Name.size() - 1];
+  }
+
+  unsigned getBinaryPrecedence() const { return Precedence; }
 
   llvm::Function *codegen(CodeGenContext &CG);
 };

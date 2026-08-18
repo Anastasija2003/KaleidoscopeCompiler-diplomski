@@ -20,6 +20,14 @@ using namespace llvm;
 
 CodeGenContext::CodeGenContext(std::string ModuleName, const DataLayout &DL)
     : ModuleName(std::move(ModuleName)) {
+  // Builtin binary operators. Lowest precedence first; '*' binds
+  // tightest. A 'def binary<op> <prec> (...) ...' adds to this map (see
+  // FunctionAST::codegen below); it's never reset by resetModule().
+  BinopPrecedence['<'] = 10;
+  BinopPrecedence['+'] = 20;
+  BinopPrecedence['-'] = 20;
+  BinopPrecedence['*'] = 40;
+
   resetModule(DL);
 }
 
@@ -93,6 +101,18 @@ Value *VariableExprAST::codegen(CodeGenContext &CG) {
   return V;
 }
 
+Value *UnaryExprAST::codegen(CodeGenContext &CG) {
+  Value *OperandV = Operand->codegen(CG);
+  if (!OperandV)
+    return nullptr;
+
+  Function *F = getFunction(CG, std::string("unary") + Opcode);
+  if (!F)
+    return LogErrorV("Unknown unary operator");
+
+  return CG.getBuilder().CreateCall(F, OperandV, "unop");
+}
+
 Value *BinaryExprAST::codegen(CodeGenContext &CG) {
   Value *L = LHS->codegen(CG);
   Value *R = RHS->codegen(CG);
@@ -113,8 +133,19 @@ Value *BinaryExprAST::codegen(CodeGenContext &CG) {
     return Builder.CreateUIToFP(L, Type::getDoubleTy(CG.getContext()),
                                  "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    break;
   }
+
+  // Not a builtin -- must be a user-defined 'binary<Op>' function. If the
+  // parser accepted Op as a binop at all, CG.getBinopPrecedence() already
+  // has an entry for it, which only happens once the defining function
+  // has been through here successfully -- so this should always resolve.
+  Function *F = getFunction(CG, std::string("binary") + Op);
+  if (!F)
+    return LogErrorV("binary operator not found!");
+
+  Value *Ops[] = {L, R};
+  return Builder.CreateCall(F, Ops, "binop");
 }
 
 Value *CallExprAST::codegen(CodeGenContext &CG) {
@@ -300,6 +331,14 @@ Function *FunctionAST::codegen(CodeGenContext &CG) {
   if (!TheFunction)
     return nullptr;
 
+  // If this defines a binary operator, register its precedence *before*
+  // generating the body -- parsing and codegen happen interleaved one
+  // top-level statement at a time, but a recursive/self-referential use
+  // of the operator inside its own body still needs it to already be
+  // known.
+  if (P.isBinaryOp())
+    CG.getBinopPrecedence()[P.getOperatorName()] = P.getBinaryPrecedence();
+
   BasicBlock *BB = BasicBlock::Create(CG.getContext(), "entry", TheFunction);
   CG.getBuilder().SetInsertPoint(BB);
 
@@ -319,7 +358,13 @@ Function *FunctionAST::codegen(CodeGenContext &CG) {
   }
 
   // Error reading body: remove the function so a later redefinition attempt
-  // isn't blocked by this failed one.
+  // isn't blocked by this failed one, and un-register the operator if this
+  // was one -- it never successfully compiled, so the parser shouldn't
+  // treat it as available.
   TheFunction->eraseFromParent();
+
+  if (P.isBinaryOp())
+    CG.getBinopPrecedence().erase(P.getOperatorName());
+
   return nullptr;
 }

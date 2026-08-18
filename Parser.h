@@ -7,7 +7,6 @@
 
 #include "llvm/Support/Error.h"
 
-#include <map>
 #include <memory>
 
 class Parser {
@@ -29,6 +28,7 @@ private:
   std::unique_ptr<ExprAST> parseIfExpr();
   std::unique_ptr<ExprAST> parseForExpr();
   std::unique_ptr<ExprAST> parsePrimary();
+  std::unique_ptr<ExprAST> parseUnary();
 
   std::unique_ptr<ExprAST> parseBinOpRHS(int ExprPrec,
                                           std::unique_ptr<ExprAST> LHS);
@@ -48,5 +48,4 @@ private:
   llvm::orc::KaleidoscopeJIT &JIT;
   llvm::ExitOnError ExitOnErr;
   int CurTok = 0;
-  std::map<char, int> BinopPrecedence;
 };

@@ -45,6 +45,14 @@ public:
   llvm::FunctionPassManager &getFPM() { return *TheFPM; }
   llvm::FunctionAnalysisManager &getFAM() { return *TheFAM; }
 
+  // Precedence of every binary operator the parser currently knows about
+  // (builtins plus any user-defined 'binary<op>' functions compiled so
+  // far). Lives here rather than in Parser because FunctionAST::codegen()
+  // is what installs a new operator the moment its definition compiles --
+  // and it needs to take effect before the *next* top-level statement is
+  // parsed. Survives module resets, like FunctionProtos.
+  std::map<char, int> &getBinopPrecedence() { return BinopPrecedence; }
+
   // Hands ownership of the current context+module to the caller, bundled
   // the way ORC requires (a context and the module(s) that live in it
   // travel together). Must be followed by resetModule() before this
@@ -65,6 +73,7 @@ private:
   std::unique_ptr<llvm::IRBuilder<>> Builder;
   std::map<std::string, llvm::Value *> NamedValues;
   std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+  std::map<char, int> BinopPrecedence;
 
   // Per-function optimization pipeline (InstCombine, Reassociate, GVN,
   // SimplifyCFG) plus the analysis managers/registration it needs.

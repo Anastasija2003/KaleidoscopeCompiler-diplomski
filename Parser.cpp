@@ -9,13 +9,7 @@
 using namespace llvm::orc;
 
 Parser::Parser(Lexer &Lex, CodeGenContext &CG, KaleidoscopeJIT &JIT)
-    : Lex(Lex), CG(CG), JIT(JIT) {
-  // Lowest precedence first; '*' binds tightest.
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
-}
+    : Lex(Lex), CG(CG), JIT(JIT) {}
 
 int Parser::getNextToken() { return CurTok = Lex.getTok(); }
 
@@ -23,6 +17,7 @@ int Parser::getTokPrecedence() const {
   if (CurTok < 0 || CurTok > 255)
     return -1;
 
+  auto &BinopPrecedence = CG.getBinopPrecedence();
   auto It = BinopPrecedence.find(static_cast<char>(CurTok));
   if (It == BinopPrecedence.end())
     return -1;
@@ -187,7 +182,24 @@ std::unique_ptr<ExprAST> Parser::parsePrimary() {
   }
 }
 
-// binoprhs ::= ('+' primary)*
+// unary
+//   ::= primary
+//   ::= '<op>' unary
+std::unique_ptr<ExprAST> Parser::parseUnary() {
+  // Not an operator character, or the start of a parenthesized/argument
+  // expression -- must be an ordinary primary expression.
+  if ((CurTok < 0 || CurTok > 255) || CurTok == '(' || CurTok == ',')
+    return parsePrimary();
+
+  int Opc = CurTok;
+  getNextToken();
+  if (auto Operand = parseUnary())
+    return std::make_unique<UnaryExprAST>(static_cast<char>(Opc),
+                                           std::move(Operand));
+  return nullptr;
+}
+
+// binoprhs ::= ('+' unary)*
 std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int ExprPrec,
                                                 std::unique_ptr<ExprAST> LHS) {
   while (true) {
@@ -201,7 +213,7 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int ExprPrec,
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
-    auto RHS = parsePrimary();
+    auto RHS = parseUnary();
     if (!RHS)
       return nullptr;
 
@@ -219,22 +231,63 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int ExprPrec,
   }
 }
 
-// expression ::= primary binoprhs
+// expression ::= unary binoprhs
 std::unique_ptr<ExprAST> Parser::parseExpression() {
-  auto LHS = parsePrimary();
+  auto LHS = parseUnary();
   if (!LHS)
     return nullptr;
 
   return parseBinOpRHS(0, std::move(LHS));
 }
 
-// prototype ::= id '(' id* ')'
+// prototype
+//   ::= id '(' id* ')'
+//   ::= 'binary' LETTER number? '(' id id ')'
+//   ::= 'unary' LETTER '(' id ')'
 std::unique_ptr<PrototypeAST> Parser::parsePrototype() {
-  if (CurTok != tok_identifier)
-    return logErrorP("Expected function name in prototype");
+  std::string FnName;
 
-  std::string FnName = Lex.getIdentifier();
-  getNextToken();
+  // 0 = ordinary function, 1 = unary operator, 2 = binary operator. Also
+  // doubles as the required argument count for the operator cases, so it
+  // can be checked against ArgNames.size() below.
+  unsigned Kind = 0;
+  unsigned BinaryPrecedence = 30;
+
+  switch (CurTok) {
+  default:
+    return logErrorP("Expected function name in prototype");
+  case tok_identifier:
+    FnName = Lex.getIdentifier();
+    Kind = 0;
+    getNextToken();
+    break;
+  case tok_unary:
+    getNextToken();
+    if (CurTok < 0 || CurTok > 255)
+      return logErrorP("Expected unary operator");
+    FnName = "unary";
+    FnName += static_cast<char>(CurTok);
+    Kind = 1;
+    getNextToken();
+    break;
+  case tok_binary:
+    getNextToken();
+    if (CurTok < 0 || CurTok > 255)
+      return logErrorP("Expected binary operator");
+    FnName = "binary";
+    FnName += static_cast<char>(CurTok);
+    Kind = 2;
+    getNextToken();
+
+    // Read the precedence, if present.
+    if (CurTok == tok_number) {
+      if (Lex.getNumVal() < 1 || Lex.getNumVal() > 100)
+        return logErrorP("Invalid precedence: must be 1..100");
+      BinaryPrecedence = static_cast<unsigned>(Lex.getNumVal());
+      getNextToken();
+    }
+    break;
+  }
 
   if (CurTok != '(')
     return logErrorP("Expected '(' in prototype");
@@ -246,7 +299,12 @@ std::unique_ptr<PrototypeAST> Parser::parsePrototype() {
     return logErrorP("Expected ')' in prototype");
 
   getNextToken(); // eat )
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+
+  if (Kind && ArgNames.size() != Kind)
+    return logErrorP("Invalid number of operands for operator");
+
+  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames),
+                                         Kind != 0, BinaryPrecedence);
 }
 
 // definition ::= 'def' prototype expression
