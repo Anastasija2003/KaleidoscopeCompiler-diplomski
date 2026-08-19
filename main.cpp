@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
 
   Lexer Lex(*Input);
   CodeGenContext CG("kaleidoscope", JIT->getDataLayout());
-  Parser P(Lex, CG, *JIT);
+  Parser P(Lex, CG, JIT.get());
   P.run();
 
   return 0;

@@ -13,6 +13,7 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 
 #include <cstdio>
 
@@ -20,9 +21,12 @@ using namespace llvm;
 
 CodeGenContext::CodeGenContext(std::string ModuleName, const DataLayout &DL)
     : ModuleName(std::move(ModuleName)) {
-  // Builtin binary operators. Lowest precedence first; '*' binds
-  // tightest. A 'def binary<op> <prec> (...) ...' adds to this map (see
+  // Builtin operators. Lowest precedence first; '*' binds tightest. A
+  // 'def binary<op> <prec> (...) ...' adds to this map (see
   // FunctionAST::codegen below); it's never reset by resetModule().
+  // '=' binds loosest of all -- "a = b + 1" must parse as "a = (b + 1)",
+  // not "(a = b) + 1".
+  BinopPrecedence['='] = 2;
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
@@ -52,9 +56,13 @@ void CodeGenContext::resetModule(const DataLayout &DL) {
                                                       /*DebugLogging=*/false);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  // Peephole (InstCombine), then expose more of them by canonicalizing
-  // expression trees (Reassociate), then remove what's now redundant
-  // (GVN), then tidy up the control-flow graph (SimplifyCFG).
+  // Promote stack slots (allocas) to plain SSA registers wherever that's
+  // legally possible first -- everything below reasons much better about
+  // registers than about loads/stores through a pointer. Then: peephole
+  // (InstCombine), then expose more of them by canonicalizing expression
+  // trees (Reassociate), then remove what's now redundant (GVN), then
+  // tidy up the control-flow graph (SimplifyCFG).
+  TheFPM->addPass(PromotePass());
   TheFPM->addPass(InstCombinePass());
   TheFPM->addPass(ReassociatePass());
   TheFPM->addPass(GVNPass());
@@ -90,15 +98,31 @@ static Function *getFunction(CodeGenContext &CG, const std::string &Name) {
   return nullptr;
 }
 
+// CreateEntryBlockAlloca - Create an 'alloca' (stack slot) for a variable,
+// inserted at the *start* of the function's entry block rather than at
+// the current insertion point. That fixed location is what lets the
+// Mem2Reg pass find and analyze every variable's slot regardless of
+// where in the function it's declared (e.g. inside a for/var).
+static AllocaInst *CreateEntryBlockAlloca(CodeGenContext &CG,
+                                           Function *TheFunction,
+                                           StringRef VarName) {
+  IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                    TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(CG.getContext()), nullptr,
+                            VarName);
+}
+
 Value *NumberExprAST::codegen(CodeGenContext &CG) {
   return ConstantFP::get(CG.getContext(), APFloat(Val));
 }
 
 Value *VariableExprAST::codegen(CodeGenContext &CG) {
-  Value *V = CG.getNamedValues()[Name];
-  if (!V)
+  AllocaInst *A = CG.getNamedValues()[Name];
+  if (!A)
     return LogErrorV("Unknown variable name");
-  return V;
+
+  // Reading a variable is a load from its stack slot.
+  return CG.getBuilder().CreateLoad(A->getAllocatedType(), A, Name);
 }
 
 Value *UnaryExprAST::codegen(CodeGenContext &CG) {
@@ -114,6 +138,25 @@ Value *UnaryExprAST::codegen(CodeGenContext &CG) {
 }
 
 Value *BinaryExprAST::codegen(CodeGenContext &CG) {
+  // '=' is special: the LHS names a variable to store into, not a value
+  // to compute -- so it must not be codegen'd as an ordinary expression.
+  if (Op == '=') {
+    auto *LHSVar = dynamic_cast<VariableExprAST *>(LHS.get());
+    if (!LHSVar)
+      return LogErrorV("destination of '=' must be a variable");
+
+    Value *Val = RHS->codegen(CG);
+    if (!Val)
+      return nullptr;
+
+    AllocaInst *Alloca = CG.getNamedValues()[LHSVar->getName()];
+    if (!Alloca)
+      return LogErrorV("Unknown variable name");
+
+    CG.getBuilder().CreateStore(Val, Alloca);
+    return Val;
+  }
+
   Value *L = LHS->codegen(CG);
   Value *R = RHS->codegen(CG);
   if (!L || !R)
@@ -220,49 +263,52 @@ Value *IfExprAST::codegen(CodeGenContext &CG) {
 }
 
 // Lowers to:
-//   ...
+//   var = alloca double
 //   start = startexpr
+//   store start -> var
 //   goto loop
 // loop:
-//   variable = phi [start, loopheader], [nextvariable, loopend]
 //   ...
 //   bodyexpr
 //   ...
 // loopend:
 //   step = stepexpr
-//   nextvariable = variable + step
 //   endcond = endexpr
+//   curvar = load var
+//   nextvar = curvar + step
+//   store nextvar -> var
 //   br endcond, loop, afterloop
 // afterloop:
 Value *ForExprAST::codegen(CodeGenContext &CG) {
+  IRBuilder<> &Builder = CG.getBuilder();
+  LLVMContext &Context = CG.getContext();
+  Function *TheFunction = Builder.GetInsertBlock()->getParent();
+
+  // The loop variable is a stack slot, like any other local -- always
+  // allocated in the entry block (see CreateEntryBlockAlloca).
+  AllocaInst *Alloca = CreateEntryBlockAlloca(CG, TheFunction, VarName);
+
   Value *StartVal = Start->codegen(CG);
   if (!StartVal)
     return nullptr;
+  Builder.CreateStore(StartVal, Alloca);
 
-  IRBuilder<> &Builder = CG.getBuilder();
-  LLVMContext &Context = CG.getContext();
-
-  Function *TheFunction = Builder.GetInsertBlock()->getParent();
-  BasicBlock *PreheaderBB = Builder.GetInsertBlock();
   BasicBlock *LoopBB = BasicBlock::Create(Context, "loop", TheFunction);
 
   // Fall through from the current block into the loop.
   Builder.CreateBr(LoopBB);
   Builder.SetInsertPoint(LoopBB);
 
-  PHINode *Variable =
-      Builder.CreatePHI(Type::getDoubleTy(Context), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
-
   // The loop variable shadows any outer variable of the same name for the
   // duration of the loop; save whatever it shadows so it can be restored
   // afterward.
   auto &NamedValues = CG.getNamedValues();
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
+  AllocaInst *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Alloca;
 
-  // The body's value is discarded -- only its side effects (e.g. a call)
-  // matter -- but a codegen failure still aborts the loop.
+  // The body's value is discarded -- only its side effects (e.g. a call,
+  // or an assignment to an outer variable) matter -- but a codegen
+  // failure still aborts the loop.
   if (!Body->codegen(CG))
     return nullptr;
 
@@ -275,23 +321,25 @@ Value *ForExprAST::codegen(CodeGenContext &CG) {
     StepVal = ConstantFP::get(Context, APFloat(1.0));
   }
 
-  Value *NextVar = Builder.CreateFAdd(Variable, StepVal, "nextvar");
-
   Value *EndCond = End->codegen(CG);
   if (!EndCond)
     return nullptr;
 
+  // Reload before incrementing -- the body may have reassigned the loop
+  // variable via '=', and that write must be honored here.
+  Value *CurVar = Builder.CreateLoad(Alloca->getAllocatedType(), Alloca,
+                                      VarName);
+  Value *NextVar = Builder.CreateFAdd(CurVar, StepVal, "nextvar");
+  Builder.CreateStore(NextVar, Alloca);
+
   EndCond = Builder.CreateFCmpONE(
       EndCond, ConstantFP::get(Context, APFloat(0.0)), "loopcond");
 
-  BasicBlock *LoopEndBB = Builder.GetInsertBlock();
   BasicBlock *AfterBB =
       BasicBlock::Create(Context, "afterloop", TheFunction);
 
   Builder.CreateCondBr(EndCond, LoopBB, AfterBB);
   Builder.SetInsertPoint(AfterBB);
-
-  Variable->addIncoming(NextVar, LoopEndBB);
 
   if (OldVal)
     NamedValues[VarName] = OldVal;
@@ -300,6 +348,48 @@ Value *ForExprAST::codegen(CodeGenContext &CG) {
 
   // A for expression always evaluates to 0.0.
   return Constant::getNullValue(Type::getDoubleTy(Context));
+}
+
+Value *VarExprAST::codegen(CodeGenContext &CG) {
+  IRBuilder<> &Builder = CG.getBuilder();
+  Function *TheFunction = Builder.GetInsertBlock()->getParent();
+  auto &NamedValues = CG.getNamedValues();
+
+  // Bindings this 'var' shadows, in the same order as VarNames, so scope
+  // can be restored exactly after Body is done with it.
+  std::vector<AllocaInst *> OldBindings;
+
+  for (auto &VarBinding : VarNames) {
+    const std::string &VarName = VarBinding.first;
+    ExprAST *Init = VarBinding.second.get();
+
+    // Evaluate the initializer *before* this variable enters scope, so
+    // "var a = 1 in var a = a in ..." has the inner 'a' refer to the
+    // outer one, not to itself.
+    Value *InitVal;
+    if (Init) {
+      InitVal = Init->codegen(CG);
+      if (!InitVal)
+        return nullptr;
+    } else {
+      InitVal = ConstantFP::get(CG.getContext(), APFloat(0.0));
+    }
+
+    AllocaInst *Alloca = CreateEntryBlockAlloca(CG, TheFunction, VarName);
+    Builder.CreateStore(InitVal, Alloca);
+
+    OldBindings.push_back(NamedValues[VarName]);
+    NamedValues[VarName] = Alloca;
+  }
+
+  Value *BodyVal = Body->codegen(CG);
+  if (!BodyVal)
+    return nullptr;
+
+  for (unsigned i = 0, e = VarNames.size(); i != e; ++i)
+    NamedValues[VarNames[i].first] = OldBindings[i];
+
+  return BodyVal;
 }
 
 Function *PrototypeAST::codegen(CodeGenContext &CG) {
@@ -344,8 +434,14 @@ Function *FunctionAST::codegen(CodeGenContext &CG) {
 
   auto &NamedValues = CG.getNamedValues();
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Arg : TheFunction->args()) {
+    // Arguments arrive as plain SSA values, but the rest of codegen
+    // (VariableExprAST, '=') treats every named variable as a stack slot
+    // -- so give each argument one and store its incoming value there.
+    AllocaInst *Alloca = CreateEntryBlockAlloca(CG, TheFunction, Arg.getName());
+    CG.getBuilder().CreateStore(&Arg, Alloca);
+    NamedValues[std::string(Arg.getName())] = Alloca;
+  }
 
   if (Value *RetVal = Body->codegen(CG)) {
     CG.getBuilder().CreateRet(RetVal);

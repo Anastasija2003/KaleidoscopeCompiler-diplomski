@@ -31,7 +31,17 @@ public:
   llvm::LLVMContext &getContext() { return *TheContext; }
   llvm::Module &getModule() { return *TheModule; }
   llvm::IRBuilder<> &getBuilder() { return *Builder; }
-  std::map<std::string, llvm::Value *> &getNamedValues() { return NamedValues; }
+
+  // Currently-in-scope local variables, keyed by name. Each one is a
+  // pointer to a stack slot (an 'alloca') rather than a Value directly --
+  // reading a variable is a load from this slot, writing one (var/in's
+  // initializer aside, and the '=' operator) is a store to it. The
+  // Mem2Reg pass in the optimization pipeline below is what turns these
+  // back into ordinary SSA registers when a slot is never really needed
+  // (i.e. whenever the "variable" is never reassigned).
+  std::map<std::string, llvm::AllocaInst *> &getNamedValues() {
+    return NamedValues;
+  }
 
   // Prototypes of every function seen so far (from a 'def' or an
   // 'extern'), keyed by name. Kept around after their defining module has
@@ -71,7 +81,7 @@ private:
   std::unique_ptr<llvm::LLVMContext> TheContext;
   std::unique_ptr<llvm::Module> TheModule;
   std::unique_ptr<llvm::IRBuilder<>> Builder;
-  std::map<std::string, llvm::Value *> NamedValues;
+  std::map<std::string, llvm::AllocaInst *> NamedValues;
   std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
   std::map<char, int> BinopPrecedence;
 

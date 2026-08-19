@@ -42,6 +42,7 @@ public:
   explicit VariableExprAST(std::string Name) : Name(std::move(Name)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  const std::string &getName() const { return Name; }
 };
 
 // UnaryExprAST - Expression class for a unary operator.
@@ -105,6 +106,21 @@ public:
              std::unique_ptr<ExprAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
+
+  llvm::Value *codegen(CodeGenContext &CG) override;
+};
+
+// VarExprAST - Expression class for 'var a = 1, b = 2 in body', which
+// introduces new mutable local variables in scope for Body.
+class VarExprAST : public ExprAST {
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::unique_ptr<ExprAST> Body;
+
+public:
+  VarExprAST(
+      std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
+      std::unique_ptr<ExprAST> Body)
+      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };

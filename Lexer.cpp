@@ -33,6 +33,7 @@ int Lexer::lexIdentifier() {
       {"def", tok_def},     {"extern", tok_extern}, {"if", tok_if},
       {"then", tok_then},   {"else", tok_else},     {"for", tok_for},
       {"in", tok_in},       {"binary", tok_binary}, {"unary", tok_unary},
+      {"var", tok_var},
   };
 
   IdentifierStr = static_cast<char>(LastChar);

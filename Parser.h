@@ -11,7 +11,13 @@
 
 class Parser {
 public:
-  Parser(Lexer &Lex, CodeGenContext &CG, llvm::orc::KaleidoscopeJIT &JIT);
+  // JIT is optional: with one, this drives the usual JIT REPL (each
+  // definition/expression is handed to the JIT and the module is reset
+  // right after). Without one (nullptr), every definition accumulates
+  // into CG's single module instead -- what a static, whole-file compile
+  // to object code needs.
+  Parser(Lexer &Lex, CodeGenContext &CG,
+         llvm::orc::KaleidoscopeJIT *JIT = nullptr);
 
   void run();
 
@@ -27,6 +33,7 @@ private:
   std::unique_ptr<ExprAST> parseIdentifierExpr();
   std::unique_ptr<ExprAST> parseIfExpr();
   std::unique_ptr<ExprAST> parseForExpr();
+  std::unique_ptr<ExprAST> parseVarExpr();
   std::unique_ptr<ExprAST> parsePrimary();
   std::unique_ptr<ExprAST> parseUnary();
 
@@ -45,7 +52,7 @@ private:
 
   Lexer &Lex;
   CodeGenContext &CG;
-  llvm::orc::KaleidoscopeJIT &JIT;
+  llvm::orc::KaleidoscopeJIT *JIT;
   llvm::ExitOnError ExitOnErr;
   int CurTok = 0;
 };

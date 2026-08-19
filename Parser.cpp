@@ -8,7 +8,7 @@
 
 using namespace llvm::orc;
 
-Parser::Parser(Lexer &Lex, CodeGenContext &CG, KaleidoscopeJIT &JIT)
+Parser::Parser(Lexer &Lex, CodeGenContext &CG, KaleidoscopeJIT *JIT)
     : Lex(Lex), CG(CG), JIT(JIT) {}
 
 int Parser::getNextToken() { return CurTok = Lex.getTok(); }
@@ -163,8 +163,53 @@ std::unique_ptr<ExprAST> Parser::parseForExpr() {
                                        std::move(Body));
 }
 
+// varexpr ::= 'var' identifier ('=' expression)?
+//                    (',' identifier ('=' expression)?)* 'in' expression
+std::unique_ptr<ExprAST> Parser::parseVarExpr() {
+  getNextToken(); // eat var
+
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+
+  // At least one variable name is required.
+  if (CurTok != tok_identifier)
+    return logError("expected identifier after var");
+
+  while (true) {
+    std::string Name = Lex.getIdentifier();
+    getNextToken(); // eat identifier
+
+    // Read the optional initializer.
+    std::unique_ptr<ExprAST> Init;
+    if (CurTok == '=') {
+      getNextToken(); // eat '='
+      Init = parseExpression();
+      if (!Init)
+        return nullptr;
+    }
+
+    VarNames.emplace_back(std::move(Name), std::move(Init));
+
+    if (CurTok != ',')
+      break;
+    getNextToken(); // eat ','
+
+    if (CurTok != tok_identifier)
+      return logError("expected identifier list after var");
+  }
+
+  if (CurTok != tok_in)
+    return logError("expected 'in' keyword after 'var'");
+  getNextToken(); // eat 'in'
+
+  auto Body = parseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+}
+
 // primary
-//   ::= identifierexpr | numberexpr | parenexpr | ifexpr | forexpr
+//   ::= identifierexpr | numberexpr | parenexpr | ifexpr | forexpr | varexpr
 std::unique_ptr<ExprAST> Parser::parsePrimary() {
   switch (CurTok) {
   default:
@@ -179,6 +224,8 @@ std::unique_ptr<ExprAST> Parser::parsePrimary() {
     return parseIfExpr();
   case tok_for:
     return parseForExpr();
+  case tok_var:
+    return parseVarExpr();
   }
 }
 
@@ -343,12 +390,17 @@ void Parser::handleDefinition() {
       FnIR->print(llvm::errs());
       fprintf(stderr, "\n");
 
-      // Hand the finished module off to the JIT, then start a fresh one --
-      // this is what lets the *next* def/extern/expression redeclare or
-      // even redefine names from this one (see getFunction() in
-      // CodeGen.cpp).
-      ExitOnErr(JIT.addModule(CG.takeModule()));
-      CG.resetModule(JIT.getDataLayout());
+      if (JIT) {
+        // Hand the finished module off to the JIT, then start a fresh
+        // one -- this is what lets the *next* def/extern/expression
+        // redeclare or even redefine names from this one (see
+        // getFunction() in CodeGen.cpp).
+        ExitOnErr(JIT->addModule(CG.takeModule()));
+        CG.resetModule(JIT->getDataLayout());
+      }
+      // No JIT (static/object-file compile): leave the function where it
+      // is -- it stays in CG's one running module until the whole input
+      // has been read and the caller emits that module to an object file.
     }
   } else {
     getNextToken(); // skip token for error recovery
@@ -371,24 +423,32 @@ void Parser::handleExtern() {
 }
 
 void Parser::handleTopLevelExpression() {
-  // Evaluate a top-level expression into an anonymous function, JIT it,
-  // run it, and print the result -- no IR is printed for this case.
+  // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = parseTopLevelExpr()) {
-    if (FnAST->codegen(CG)) {
-      // Track this module's JIT'd memory separately so it can be freed
-      // right after we're done calling it (it's anonymous and one-shot).
-      auto RT = JIT.getMainJITDylib().createResourceTracker();
+    if (!FnAST->codegen(CG))
+      return;
 
-      ExitOnErr(JIT.addModule(CG.takeModule(), RT));
-      CG.resetModule(JIT.getDataLayout());
-
-      auto ExprSymbol = ExitOnErr(JIT.lookup("__anon_expr"));
-
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "Evaluated to %f\n", FP());
-
-      ExitOnErr(RT->remove());
+    if (!JIT) {
+      // Static/object-file compile: nothing to execute -- the compiled
+      // '__anon_expr' function just stays in the module like any other.
+      return;
     }
+
+    // JIT it, run it, and print the result -- no IR is printed for this
+    // case. Track this module's JIT'd memory separately so it can be
+    // freed right after we're done calling it (it's anonymous and
+    // one-shot).
+    auto RT = JIT->getMainJITDylib().createResourceTracker();
+
+    ExitOnErr(JIT->addModule(CG.takeModule(), RT));
+    CG.resetModule(JIT->getDataLayout());
+
+    auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
+
+    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+    fprintf(stderr, "Evaluated to %f\n", FP());
+
+    ExitOnErr(RT->remove());
   } else {
     getNextToken();
   }
