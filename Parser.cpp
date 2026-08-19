@@ -36,7 +36,7 @@ std::unique_ptr<PrototypeAST> Parser::logErrorP(const char *Str) const {
 
 // numberexpr ::= number
 std::unique_ptr<ExprAST> Parser::parseNumberExpr() {
-  auto Result = std::make_unique<NumberExprAST>(Lex.getNumVal());
+  auto Result = std::make_unique<NumberExprAST>(Lex.getLoc(), Lex.getNumVal());
   getNextToken(); // consume the number
   return Result;
 }
@@ -59,11 +59,12 @@ std::unique_ptr<ExprAST> Parser::parseParenExpr() {
 //   ::= identifier '(' expression* ')'
 std::unique_ptr<ExprAST> Parser::parseIdentifierExpr() {
   std::string IdName = Lex.getIdentifier();
+  SourceLocation LitLoc = Lex.getLoc();
 
   getNextToken(); // eat identifier
 
   if (CurTok != '(') // Simple variable ref.
-    return std::make_unique<VariableExprAST>(IdName);
+    return std::make_unique<VariableExprAST>(LitLoc, IdName);
 
   // Call.
   getNextToken(); // eat (
@@ -85,11 +86,12 @@ std::unique_ptr<ExprAST> Parser::parseIdentifierExpr() {
   }
 
   getNextToken(); // eat )
-  return std::make_unique<CallExprAST>(IdName, std::move(Args));
+  return std::make_unique<CallExprAST>(LitLoc, IdName, std::move(Args));
 }
 
 // ifexpr ::= 'if' expression 'then' expression 'else' expression
 std::unique_ptr<ExprAST> Parser::parseIfExpr() {
+  SourceLocation IfLoc = Lex.getLoc();
   getNextToken(); // eat if
 
   auto Cond = parseExpression();
@@ -112,12 +114,13 @@ std::unique_ptr<ExprAST> Parser::parseIfExpr() {
   if (!Else)
     return nullptr;
 
-  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                       std::move(Else));
 }
 
 // forexpr ::= 'for' identifier '=' expr ',' expr (',' expr)? 'in' expression
 std::unique_ptr<ExprAST> Parser::parseForExpr() {
+  SourceLocation ForLoc = Lex.getLoc();
   getNextToken(); // eat for
 
   if (CurTok != tok_identifier)
@@ -158,7 +161,7 @@ std::unique_ptr<ExprAST> Parser::parseForExpr() {
   if (!Body)
     return nullptr;
 
-  return std::make_unique<ForExprAST>(IdName, std::move(Start),
+  return std::make_unique<ForExprAST>(ForLoc, IdName, std::move(Start),
                                        std::move(End), std::move(Step),
                                        std::move(Body));
 }
@@ -166,6 +169,7 @@ std::unique_ptr<ExprAST> Parser::parseForExpr() {
 // varexpr ::= 'var' identifier ('=' expression)?
 //                    (',' identifier ('=' expression)?)* 'in' expression
 std::unique_ptr<ExprAST> Parser::parseVarExpr() {
+  SourceLocation VarLoc = Lex.getLoc();
   getNextToken(); // eat var
 
   std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
@@ -205,7 +209,8 @@ std::unique_ptr<ExprAST> Parser::parseVarExpr() {
   if (!Body)
     return nullptr;
 
-  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+  return std::make_unique<VarExprAST>(VarLoc, std::move(VarNames),
+                                       std::move(Body));
 }
 
 // primary
@@ -238,10 +243,11 @@ std::unique_ptr<ExprAST> Parser::parseUnary() {
   if ((CurTok < 0 || CurTok > 255) || CurTok == '(' || CurTok == ',')
     return parsePrimary();
 
+  SourceLocation OpLoc = Lex.getLoc();
   int Opc = CurTok;
   getNextToken();
   if (auto Operand = parseUnary())
-    return std::make_unique<UnaryExprAST>(static_cast<char>(Opc),
+    return std::make_unique<UnaryExprAST>(OpLoc, static_cast<char>(Opc),
                                            std::move(Operand));
   return nullptr;
 }
@@ -258,6 +264,7 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int ExprPrec,
       return LHS;
 
     int BinOp = CurTok;
+    SourceLocation BinLoc = Lex.getLoc();
     getNextToken(); // eat binop
 
     auto RHS = parseUnary();
@@ -273,7 +280,7 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int ExprPrec,
         return nullptr;
     }
 
-    LHS = std::make_unique<BinaryExprAST>(static_cast<char>(BinOp),
+    LHS = std::make_unique<BinaryExprAST>(BinLoc, static_cast<char>(BinOp),
                                            std::move(LHS), std::move(RHS));
   }
 }
@@ -293,6 +300,7 @@ std::unique_ptr<ExprAST> Parser::parseExpression() {
 //   ::= 'unary' LETTER '(' id ')'
 std::unique_ptr<PrototypeAST> Parser::parsePrototype() {
   std::string FnName;
+  SourceLocation FnLoc = Lex.getLoc();
 
   // 0 = ordinary function, 1 = unary operator, 2 = binary operator. Also
   // doubles as the required argument count for the operator cases, so it
@@ -350,7 +358,7 @@ std::unique_ptr<PrototypeAST> Parser::parsePrototype() {
   if (Kind && ArgNames.size() != Kind)
     return logErrorP("Invalid number of operands for operator");
 
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames),
+  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames),
                                          Kind != 0, BinaryPrecedence);
 }
 
@@ -368,10 +376,13 @@ std::unique_ptr<FunctionAST> Parser::parseDefinition() {
 
 // toplevelexpr ::= expression
 std::unique_ptr<FunctionAST> Parser::parseTopLevelExpr() {
+  SourceLocation FnLoc = Lex.getLoc();
   if (auto E = parseExpression()) {
-    // Wrap it in an anonymous no-argument function.
-    auto Proto =
-        std::make_unique<PrototypeAST>("__anon_expr", std::vector<std::string>());
+    // Wrap it in an anonymous no-argument function. Kept as "__anon_expr"
+    // (not renamed to "main", unlike the upstream debug-info tutorial)
+    // since main.cpp's JIT mode looks it up by that exact name.
+    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
+                                                 std::vector<std::string>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;

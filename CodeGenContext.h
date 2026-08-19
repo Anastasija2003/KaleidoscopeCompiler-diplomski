@@ -5,6 +5,7 @@
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
@@ -75,6 +76,31 @@ public:
   // functions that were defined in a previous one.
   void resetModule(const llvm::DataLayout &DL);
 
+  // Debug info (DWARF) support -- disabled by default. Call
+  // enableDebugInfo() once, right after construction, to turn it on for
+  // this CodeGenContext's module. With it off, emitLocation() is a no-op
+  // and FunctionAST::codegen() skips creating any debug metadata. Not
+  // wired into main.cpp's JIT REPL: resetModule() runs once per
+  // definition there, which would tear down the DIBuilder (it's tied to
+  // the LLVMContext being replaced) and the single compile unit along
+  // with it -- kcc's one-module-per-file static compile has no such
+  // problem, so that's where this gets used.
+  void enableDebugInfo(const std::string &Filename,
+                        const std::string &Directory);
+  bool hasDebugInfo() const { return DBuilder != nullptr; }
+  void finalizeDebugInfo();
+
+  llvm::DIBuilder &getDIBuilder() { return *DBuilder; }
+  llvm::DICompileUnit *getCompileUnit() { return TheCU; }
+  llvm::DIType *getDoubleDIType();
+  std::vector<llvm::DIScope *> &getLexicalBlocks() { return LexicalBlocks; }
+
+  // Points the IR builder's "current debug location" at AST's source
+  // position, or clears it for AST == nullptr (used for a function's
+  // prologue, so a debugger steps past it when breaking on the
+  // function). No-op when debug info isn't enabled.
+  void emitLocation(ExprAST *AST);
+
 private:
   std::string ModuleName;
 
@@ -94,4 +120,9 @@ private:
   std::unique_ptr<llvm::ModuleAnalysisManager> TheMAM;
   std::unique_ptr<llvm::PassInstrumentationCallbacks> ThePIC;
   std::unique_ptr<llvm::StandardInstrumentations> TheSI;
+
+  std::unique_ptr<llvm::DIBuilder> DBuilder;
+  llvm::DICompileUnit *TheCU = nullptr;
+  llvm::DIType *DblDIType = nullptr;
+  std::vector<llvm::DIScope *> LexicalBlocks;
 };

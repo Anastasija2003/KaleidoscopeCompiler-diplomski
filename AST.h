@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SourceLocation.h"
+
 #include <cassert>
 #include <memory>
 #include <string>
@@ -16,12 +18,21 @@ class Function;
 
 class CodeGenContext;
 
-// ExprAST - Base class for all expression nodes.
+// ExprAST - Base class for all expression nodes. Every node carries the
+// source position it started at, so CodeGenContext::emitLocation() can
+// attach debug info to the instructions it generates (when debug info is
+// enabled -- see CodeGenContext::enableDebugInfo()).
 class ExprAST {
+  SourceLocation Loc;
+
 public:
+  explicit ExprAST(SourceLocation Loc) : Loc(Loc) {}
   virtual ~ExprAST() = default;
 
   virtual llvm::Value *codegen(CodeGenContext &CG) = 0;
+
+  int getLine() const { return Loc.Line; }
+  int getCol() const { return Loc.Col; }
 };
 
 // NumberExprAST - Expression class for numeric literals like "1.0".
@@ -29,7 +40,7 @@ class NumberExprAST : public ExprAST {
   double Val;
 
 public:
-  explicit NumberExprAST(double Val) : Val(Val) {}
+  NumberExprAST(SourceLocation Loc, double Val) : ExprAST(Loc), Val(Val) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -39,7 +50,8 @@ class VariableExprAST : public ExprAST {
   std::string Name;
 
 public:
-  explicit VariableExprAST(std::string Name) : Name(std::move(Name)) {}
+  VariableExprAST(SourceLocation Loc, std::string Name)
+      : ExprAST(Loc), Name(std::move(Name)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
   const std::string &getName() const { return Name; }
@@ -51,8 +63,8 @@ class UnaryExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Operand;
 
 public:
-  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
+  UnaryExprAST(SourceLocation Loc, char Opcode, std::unique_ptr<ExprAST> Operand)
+      : ExprAST(Loc), Opcode(Opcode), Operand(std::move(Operand)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -63,9 +75,9 @@ class BinaryExprAST : public ExprAST {
   std::unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
+  BinaryExprAST(SourceLocation Loc, char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
-      : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+      : ExprAST(Loc), Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -76,8 +88,9 @@ class CallExprAST : public ExprAST {
   std::vector<std::unique_ptr<ExprAST>> Args;
 
 public:
-  CallExprAST(std::string Callee, std::vector<std::unique_ptr<ExprAST>> Args)
-      : Callee(std::move(Callee)), Args(std::move(Args)) {}
+  CallExprAST(SourceLocation Loc, std::string Callee,
+              std::vector<std::unique_ptr<ExprAST>> Args)
+      : ExprAST(Loc), Callee(std::move(Callee)), Args(std::move(Args)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -87,9 +100,10 @@ class IfExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
 
 public:
-  IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
-            std::unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+  IfExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
+            std::unique_ptr<ExprAST> Then, std::unique_ptr<ExprAST> Else)
+      : ExprAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
+        Else(std::move(Else)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -101,10 +115,10 @@ class ForExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Start, End, Step, Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
-             std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<ExprAST> Body)
-      : VarName(std::move(VarName)), Start(std::move(Start)),
+  ForExprAST(SourceLocation Loc, std::string VarName,
+             std::unique_ptr<ExprAST> Start, std::unique_ptr<ExprAST> End,
+             std::unique_ptr<ExprAST> Step, std::unique_ptr<ExprAST> Body)
+      : ExprAST(Loc), VarName(std::move(VarName)), Start(std::move(Start)),
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
@@ -118,9 +132,10 @@ class VarExprAST : public ExprAST {
 
 public:
   VarExprAST(
+      SourceLocation Loc,
       std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
       std::unique_ptr<ExprAST> Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+      : ExprAST(Loc), VarNames(std::move(VarNames)), Body(std::move(Body)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
@@ -129,17 +144,21 @@ public:
 // argument names (which implicitly gives the argument count), and --
 // since a user-defined operator is just a function with a special name
 // ("binary<op>"/"unary<op>") -- whether it's one, and at what precedence.
+// Only tracks a line (not a full SourceLocation) since that's all
+// DISubprogram (see CodeGen.cpp) needs.
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
   bool IsOperator;
   unsigned Precedence; // Precedence if this is a binary operator.
+  int Line;
 
 public:
-  PrototypeAST(std::string Name, std::vector<std::string> Args,
-               bool IsOperator = false, unsigned Precedence = 0)
+  PrototypeAST(SourceLocation Loc, std::string Name,
+               std::vector<std::string> Args, bool IsOperator = false,
+               unsigned Precedence = 0)
       : Name(std::move(Name)), Args(std::move(Args)), IsOperator(IsOperator),
-        Precedence(Precedence) {}
+        Precedence(Precedence), Line(Loc.Line) {}
 
   const std::string &getName() const { return Name; }
 
@@ -152,6 +171,7 @@ public:
   }
 
   unsigned getBinaryPrecedence() const { return Precedence; }
+  int getLine() const { return Line; }
 
   llvm::Function *codegen(CodeGenContext &CG);
 };

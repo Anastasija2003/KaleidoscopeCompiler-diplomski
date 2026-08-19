@@ -14,27 +14,44 @@
 
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 // kcc - Static (ahead-of-time) Kaleidoscope compiler. Unlike main.cpp
 // (the JIT REPL), this reads a whole .ks file, compiles every definition
 // into one running Module (no JIT, no per-definition module swap -- see
 // Parser's nullptr-JIT mode), and at the end emits that Module as a
 // native object file that can be linked like any other .o.
+//
+// Usage: kcc [-g] [input.ks] [output.o]
+//   -g  emit DWARF debug info, so the resulting object can be stepped
+//       through (source lines, local variables) in lldb/gdb.
 int main(int argc, char **argv) {
+  bool EmitDebugInfo = false;
+  std::vector<std::string> PositionalArgs;
+  for (int i = 1; i < argc; ++i) {
+    std::string Arg = argv[i];
+    if (Arg == "-g")
+      EmitDebugInfo = true;
+    else
+      PositionalArgs.push_back(Arg);
+  }
+
   std::ifstream File;
   std::istream *Input = &std::cin;
+  std::string InputPath = "<stdin>";
   std::string OutputPath = "output.o";
 
-  if (argc > 1) {
-    File.open(argv[1]);
+  if (!PositionalArgs.empty()) {
+    InputPath = PositionalArgs[0];
+    File.open(InputPath);
     if (!File) {
-      std::cerr << "error: could not open file '" << argv[1] << "'\n";
+      std::cerr << "error: could not open file '" << InputPath << "'\n";
       return 1;
     }
     Input = &File;
   }
-  if (argc > 2)
-    OutputPath = argv[2];
+  if (PositionalArgs.size() > 1)
+    OutputPath = PositionalArgs[1];
 
   // Register every target LLVM was built with, so lookupTarget below can
   // find whichever one matches the host triple.
@@ -65,10 +82,16 @@ int main(int argc, char **argv) {
   CodeGenContext CG("kaleidoscope", TheTargetMachine->createDataLayout());
   CG.getModule().setTargetTriple(TargetTriple);
 
+  if (EmitDebugInfo)
+    CG.enableDebugInfo(InputPath, ".");
+
   // No JIT passed: Parser accumulates every definition into CG's single
   // module instead of handing modules off one at a time.
   Parser P(Lex, CG);
   P.run();
+
+  // No-op if -g wasn't passed.
+  CG.finalizeDebugInfo();
 
   std::error_code EC;
   llvm::raw_fd_ostream Dest(OutputPath, EC, llvm::sys::fs::OF_None);

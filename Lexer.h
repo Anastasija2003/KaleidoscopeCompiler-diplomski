@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SourceLocation.h"
+
 #include <istream>
 #include <string>
 
@@ -33,8 +35,11 @@ public:
   const std::string &getIdentifier() const { return IdentifierStr; }
   double getNumVal() const { return NumVal; }
 
+  // Where the token last returned by getTok() started.
+  SourceLocation getLoc() const { return CurLoc; }
+
 private:
-  int readChar() { return In.get(); }
+  int readChar();
 
   int lexIdentifier();
   int lexNumber();
@@ -44,4 +49,10 @@ private:
   int LastChar = ' ';
   std::string IdentifierStr;
   double NumVal = 0;
+
+  // LexLoc tracks where the raw character stream currently is; CurLoc is
+  // a snapshot of that, taken at the start of each token, so callers get
+  // the position of the token itself rather than of whatever's after it.
+  SourceLocation LexLoc{1, 0};
+  SourceLocation CurLoc{1, 0};
 };

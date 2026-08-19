@@ -4,9 +4,26 @@
 #include <cstdlib>
 #include <unordered_map>
 
+int Lexer::readChar() {
+  int C = In.get();
+  if (C == '\n' || C == '\r') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    LexLoc.Col++;
+  }
+  return C;
+}
+
 int Lexer::getTok() {
   while (isspace(LastChar))
     LastChar = readChar();
+
+  // CurLoc is the position of the token we're about to read, not of
+  // whatever comes after it -- must be snapshotted here, right after
+  // whitespace/comments are behind us but before the token itself is
+  // consumed.
+  CurLoc = LexLoc;
 
   if (isalpha(LastChar))
     return lexIdentifier();

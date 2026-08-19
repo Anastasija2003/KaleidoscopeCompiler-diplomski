@@ -2,13 +2,18 @@
 #include "CodeGenContext.h"
 
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
@@ -74,6 +79,50 @@ void CodeGenContext::resetModule(const DataLayout &DL) {
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
+void CodeGenContext::enableDebugInfo(const std::string &Filename,
+                                      const std::string &Directory) {
+  // Tells the LLVM verifier / bitcode writer what version of the debug
+  // info format this module's metadata is in.
+  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
+                            DEBUG_METADATA_VERSION);
+
+  // Darwin's linker only understands DWARF up to version 2.
+  if (Triple(sys::getProcessTriple()).isOSDarwin())
+    TheModule->addModuleFlag(Module::Warning, "Dwarf Version", 2);
+
+  DBuilder = std::make_unique<DIBuilder>(*TheModule);
+  TheCU = DBuilder->createCompileUnit(
+      dwarf::DW_LANG_C, DBuilder->createFile(Filename, Directory),
+      "Kaleidoscope Compiler", /*isOptimized=*/false, "", 0);
+}
+
+DIType *CodeGenContext::getDoubleDIType() {
+  if (DblDIType)
+    return DblDIType;
+  DblDIType = DBuilder->createBasicType("double", 64, dwarf::DW_ATE_float);
+  return DblDIType;
+}
+
+void CodeGenContext::emitLocation(ExprAST *AST) {
+  if (!DBuilder)
+    return;
+
+  if (!AST) {
+    Builder->SetCurrentDebugLocation(DebugLoc());
+    return;
+  }
+
+  DIScope *Scope =
+      LexicalBlocks.empty() ? static_cast<DIScope *>(TheCU) : LexicalBlocks.back();
+  Builder->SetCurrentDebugLocation(
+      DILocation::get(Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+
+void CodeGenContext::finalizeDebugInfo() {
+  if (DBuilder)
+    DBuilder->finalize();
+}
+
 // LogErrorV - Same idea as Parser's logError, but for the codegen phase,
 // where the "no value" sentinel is a null Value* instead of a null AST node.
 static Value *LogErrorV(const char *Str) {
@@ -112,7 +161,24 @@ static AllocaInst *CreateEntryBlockAlloca(CodeGenContext &CG,
                             VarName);
 }
 
+// CreateFunctionType - Builds the DWARF type of a function taking NumArgs
+// doubles and returning a double (every Kaleidoscope function's shape).
+static DISubroutineType *CreateFunctionType(CodeGenContext &CG,
+                                             unsigned NumArgs) {
+  SmallVector<Metadata *, 8> EltTys;
+  DIType *DblTy = CG.getDoubleDIType();
+
+  // The first element is the return type.
+  EltTys.push_back(DblTy);
+  for (unsigned i = 0; i != NumArgs; ++i)
+    EltTys.push_back(DblTy);
+
+  return CG.getDIBuilder().createSubroutineType(
+      CG.getDIBuilder().getOrCreateTypeArray(EltTys));
+}
+
 Value *NumberExprAST::codegen(CodeGenContext &CG) {
+  CG.emitLocation(this);
   return ConstantFP::get(CG.getContext(), APFloat(Val));
 }
 
@@ -121,6 +187,7 @@ Value *VariableExprAST::codegen(CodeGenContext &CG) {
   if (!A)
     return LogErrorV("Unknown variable name");
 
+  CG.emitLocation(this);
   // Reading a variable is a load from its stack slot.
   return CG.getBuilder().CreateLoad(A->getAllocatedType(), A, Name);
 }
@@ -134,10 +201,13 @@ Value *UnaryExprAST::codegen(CodeGenContext &CG) {
   if (!F)
     return LogErrorV("Unknown unary operator");
 
+  CG.emitLocation(this);
   return CG.getBuilder().CreateCall(F, OperandV, "unop");
 }
 
 Value *BinaryExprAST::codegen(CodeGenContext &CG) {
+  CG.emitLocation(this);
+
   // '=' is special: the LHS names a variable to store into, not a value
   // to compute -- so it must not be codegen'd as an ordinary expression.
   if (Op == '=') {
@@ -192,6 +262,8 @@ Value *BinaryExprAST::codegen(CodeGenContext &CG) {
 }
 
 Value *CallExprAST::codegen(CodeGenContext &CG) {
+  CG.emitLocation(this);
+
   Function *CalleeF = getFunction(CG, Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
@@ -210,6 +282,8 @@ Value *CallExprAST::codegen(CodeGenContext &CG) {
 }
 
 Value *IfExprAST::codegen(CodeGenContext &CG) {
+  CG.emitLocation(this);
+
   Value *CondV = Cond->codegen(CG);
   if (!CondV)
     return nullptr;
@@ -287,6 +361,8 @@ Value *ForExprAST::codegen(CodeGenContext &CG) {
   // The loop variable is a stack slot, like any other local -- always
   // allocated in the entry block (see CreateEntryBlockAlloca).
   AllocaInst *Alloca = CreateEntryBlockAlloca(CG, TheFunction, VarName);
+
+  CG.emitLocation(this);
 
   Value *StartVal = Start->codegen(CG);
   if (!StartVal)
@@ -382,6 +458,8 @@ Value *VarExprAST::codegen(CodeGenContext &CG) {
     NamedValues[VarName] = Alloca;
   }
 
+  CG.emitLocation(this);
+
   Value *BodyVal = Body->codegen(CG);
   if (!BodyVal)
     return nullptr;
@@ -432,19 +510,61 @@ Function *FunctionAST::codegen(CodeGenContext &CG) {
   BasicBlock *BB = BasicBlock::Create(CG.getContext(), "entry", TheFunction);
   CG.getBuilder().SetInsertPoint(BB);
 
+  // Create a DWARF subprogram (debug info's notion of "this is a
+  // function") when debug info is enabled, and push it as the current
+  // lexical scope -- everything generated for this function's body,
+  // including nested var/for scopes, attaches its locations under it.
+  DISubprogram *SP = nullptr;
+  DIFile *Unit = nullptr;
+  unsigned LineNo = P.getLine();
+  if (CG.hasDebugInfo()) {
+    Unit = CG.getDIBuilder().createFile(CG.getCompileUnit()->getFilename(),
+                                         CG.getCompileUnit()->getDirectory());
+    SP = CG.getDIBuilder().createFunction(
+        Unit, P.getName(), StringRef(), Unit, LineNo,
+        CreateFunctionType(CG, TheFunction->arg_size()), LineNo,
+        DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
+    TheFunction->setSubprogram(SP);
+    CG.getLexicalBlocks().push_back(SP);
+
+    // Leading instructions with no debug location are treated as the
+    // function's prologue -- a debugger breaking on the function runs
+    // past them instead of stopping there. There's nothing meaningful to
+    // point at yet, so explicitly clear the location for them.
+    CG.emitLocation(nullptr);
+  }
+
   auto &NamedValues = CG.getNamedValues();
   NamedValues.clear();
+  unsigned ArgIdx = 0;
   for (auto &Arg : TheFunction->args()) {
     // Arguments arrive as plain SSA values, but the rest of codegen
     // (VariableExprAST, '=') treats every named variable as a stack slot
     // -- so give each argument one and store its incoming value there.
     AllocaInst *Alloca = CreateEntryBlockAlloca(CG, TheFunction, Arg.getName());
+
+    if (CG.hasDebugInfo()) {
+      DILocalVariable *D = CG.getDIBuilder().createParameterVariable(
+          SP, Arg.getName(), ++ArgIdx, Unit, LineNo, CG.getDoubleDIType(),
+          /*AlwaysPreserve=*/true);
+      CG.getDIBuilder().insertDeclare(
+          Alloca, D, CG.getDIBuilder().createExpression(),
+          DILocation::get(SP->getContext(), LineNo, 0, SP),
+          CG.getBuilder().GetInsertBlock());
+    }
+
     CG.getBuilder().CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
+  CG.emitLocation(Body.get());
+
   if (Value *RetVal = Body->codegen(CG)) {
     CG.getBuilder().CreateRet(RetVal);
+
+    if (CG.hasDebugInfo())
+      CG.getLexicalBlocks().pop_back();
+
     verifyFunction(*TheFunction);
 
     // Run the peephole optimization pipeline on the finished function.
@@ -461,6 +581,9 @@ Function *FunctionAST::codegen(CodeGenContext &CG) {
 
   if (P.isBinaryOp())
     CG.getBinopPrecedence().erase(P.getOperatorName());
+
+  if (CG.hasDebugInfo())
+    CG.getLexicalBlocks().pop_back();
 
   return nullptr;
 }
