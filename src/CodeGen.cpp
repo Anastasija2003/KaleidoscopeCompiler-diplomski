@@ -14,6 +14,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/IPO/Inliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
@@ -75,8 +76,16 @@ void CodeGenContext::resetModule(const DataLayout &DL) {
 
   PassBuilder PB;
   PB.registerModuleAnalyses(*TheMAM);
+  PB.registerCGSCCAnalyses(*TheCGAM);
   PB.registerFunctionAnalyses(*TheFAM);
+  PB.registerLoopAnalyses(*TheLAM);
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+}
+
+void CodeGenContext::runModuleInlining() {
+  ModulePassManager MPM;
+  MPM.addPass(ModuleInlinerWrapperPass());
+  MPM.run(*TheModule, *TheMAM);
 }
 
 void CodeGenContext::enableDebugInfo(const std::string &Filename,

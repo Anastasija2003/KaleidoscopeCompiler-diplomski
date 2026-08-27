@@ -1,8 +1,15 @@
-# Build outputs (Makefile targets)
+# Build outputs
 /main
 /lex
+/kcc
 *.o
 *.dSYM/
+
+# CMake
+/build/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
 
 # OS cruft
 .DS_Store

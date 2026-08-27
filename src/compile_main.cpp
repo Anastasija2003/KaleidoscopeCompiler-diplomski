@@ -22,16 +22,24 @@
 // Parser's nullptr-JIT mode), and at the end emits that Module as a
 // native object file that can be linked like any other .o.
 //
-// Usage: kcc [-g] [input.ks] [output.o]
-//   -g  emit DWARF debug info, so the resulting object can be stepped
-//       through (source lines, local variables) in lldb/gdb.
+// Usage: kcc [-g] [-emit-llvm] [input.ks] [output.o]
+//   -g          emit DWARF debug info, so the resulting object can be
+//               stepped through (source lines, local variables) in
+//               lldb/gdb.
+//   -emit-llvm  print the final LLVM IR (after inlining -- see
+//               runModuleInlining() below) to stdout instead of writing a
+//               native object file. Mainly for checking what inlining
+//               actually did to a given input.
 int main(int argc, char **argv) {
   bool EmitDebugInfo = false;
+  bool EmitLLVM = false;
   std::vector<std::string> PositionalArgs;
   for (int i = 1; i < argc; ++i) {
     std::string Arg = argv[i];
     if (Arg == "-g")
       EmitDebugInfo = true;
+    else if (Arg == "-emit-llvm")
+      EmitLLVM = true;
     else
       PositionalArgs.push_back(Arg);
   }
@@ -53,13 +61,14 @@ int main(int argc, char **argv) {
   if (PositionalArgs.size() > 1)
     OutputPath = PositionalArgs[1];
 
-  // Register every target LLVM was built with, so lookupTarget below can
-  // find whichever one matches the host triple.
-  llvm::InitializeAllTargetInfos();
-  llvm::InitializeAllTargets();
-  llvm::InitializeAllTargetMCs();
-  llvm::InitializeAllAsmParsers();
-  llvm::InitializeAllAsmPrinters();
+  // kcc always compiles for the host's own default triple (see
+  // getDefaultTargetTriple() below) -- it never cross-compiles -- so only
+  // the native/host backend needs to be registered, same as main.cpp's
+  // JIT. Registering every backend LLVM was built with would also work,
+  // but pulls in every target's codegen library for no benefit here.
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+  llvm::InitializeNativeTargetAsmParser();
 
   auto TargetTripleStr = llvm::sys::getDefaultTargetTriple();
   llvm::Triple TargetTriple(TargetTripleStr);
@@ -92,6 +101,18 @@ int main(int argc, char **argv) {
 
   // No-op if -g wasn't passed.
   CG.finalizeDebugInfo();
+
+  // Real interprocedural inlining, now that every function in the file
+  // has been generated into CG's single module -- see
+  // CodeGenContext::runModuleInlining()'s doc comment and plan.md 4.5 for
+  // why this has to run here, after the whole file is parsed, rather than
+  // interleaved with codegen the way the per-function FPM is.
+  CG.runModuleInlining();
+
+  if (EmitLLVM) {
+    CG.getModule().print(llvm::outs(), nullptr);
+    return 0;
+  }
 
   std::error_code EC;
   llvm::raw_fd_ostream Dest(OutputPath, EC, llvm::sys::fs::OF_None);

@@ -56,6 +56,15 @@ public:
   llvm::FunctionPassManager &getFPM() { return *TheFPM; }
   llvm::FunctionAnalysisManager &getFAM() { return *TheFAM; }
 
+  // Runs real interprocedural inlining over the *entire* current module in
+  // one pass (plan.md 4.5). Unlike getFPM(), which runs per-function right
+  // as each function is generated, this only makes sense once every
+  // function that might get inlined into another has already been
+  // generated -- so callers must run it after the whole file has been
+  // parsed (see compile_main.cpp), not interleaved with codegen the way
+  // main.cpp's JIT REPL works.
+  void runModuleInlining();
+
   // Precedence of every binary operator the parser currently knows about
   // (builtins plus any user-defined 'binary<op>' functions compiled so
   // far). Lives here rather than in Parser because FunctionAST::codegen()
