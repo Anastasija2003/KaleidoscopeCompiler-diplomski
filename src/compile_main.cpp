@@ -16,20 +16,6 @@
 #include <iostream>
 #include <vector>
 
-// kcc - Static (ahead-of-time) Kaleidoscope compiler. Unlike main.cpp
-// (the JIT REPL), this reads a whole .ks file, compiles every definition
-// into one running Module (no JIT, no per-definition module swap -- see
-// Parser's nullptr-JIT mode), and at the end emits that Module as a
-// native object file that can be linked like any other .o.
-//
-// Usage: kcc [-g] [-emit-llvm] [input.ks] [output.o]
-//   -g          emit DWARF debug info, so the resulting object can be
-//               stepped through (source lines, local variables) in
-//               lldb/gdb.
-//   -emit-llvm  print the final LLVM IR (after inlining -- see
-//               runModuleInlining() below) to stdout instead of writing a
-//               native object file. Mainly for checking what inlining
-//               actually did to a given input.
 int main(int argc, char **argv) {
   bool EmitDebugInfo = false;
   bool EmitLLVM = false;
@@ -61,11 +47,6 @@ int main(int argc, char **argv) {
   if (PositionalArgs.size() > 1)
     OutputPath = PositionalArgs[1];
 
-  // kcc always compiles for the host's own default triple (see
-  // getDefaultTargetTriple() below) -- it never cross-compiles -- so only
-  // the native/host backend needs to be registered, same as main.cpp's
-  // JIT. Registering every backend LLVM was built with would also work,
-  // but pulls in every target's codegen library for no benefit here.
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
   llvm::InitializeNativeTargetAsmParser();
@@ -86,27 +67,17 @@ int main(int argc, char **argv) {
       TargetTriple, "generic", "", Opt, llvm::Reloc::PIC_);
 
   Lexer Lex(*Input);
-  // The module's data layout has to match the target we're compiling
-  // for, not the JIT's -- there is no JIT here.
   CodeGenContext CG("kaleidoscope", TheTargetMachine->createDataLayout());
   CG.getModule().setTargetTriple(TargetTriple);
 
   if (EmitDebugInfo)
     CG.enableDebugInfo(InputPath, ".");
 
-  // No JIT passed: Parser accumulates every definition into CG's single
-  // module instead of handing modules off one at a time.
   Parser P(Lex, CG);
   P.run();
 
-  // No-op if -g wasn't passed.
   CG.finalizeDebugInfo();
 
-  // Real interprocedural inlining, now that every function in the file
-  // has been generated into CG's single module -- see
-  // CodeGenContext::runModuleInlining()'s doc comment and plan.md 4.5 for
-  // why this has to run here, after the whole file is parsed, rather than
-  // interleaved with codegen the way the per-function FPM is.
   CG.runModuleInlining();
 
   if (EmitLLVM) {

@@ -19,10 +19,6 @@ int Lexer::getTok() {
   while (isspace(LastChar))
     LastChar = readChar();
 
-  // CurLoc is the position of the token we're about to read, not of
-  // whatever comes after it -- must be snapshotted here, right after
-  // whitespace/comments are behind us but before the token itself is
-  // consumed.
   CurLoc = LexLoc;
 
   if (isalpha(LastChar))

@@ -2,22 +2,14 @@
 
 #include "AST.h"
 #include "CodeGenContext.h"
-#include "KaleidoscopeJIT.h"
 #include "Lexer.h"
-
-#include "llvm/Support/Error.h"
+#include "ModuleSink.h"
 
 #include <memory>
 
 class Parser {
 public:
-  // JIT is optional: with one, this drives the usual JIT REPL (each
-  // definition/expression is handed to the JIT and the module is reset
-  // right after). Without one (nullptr), every definition accumulates
-  // into CG's single module instead -- what a static, whole-file compile
-  // to object code needs.
-  Parser(Lexer &Lex, CodeGenContext &CG,
-         llvm::orc::KaleidoscopeJIT *JIT = nullptr);
+  Parser(Lexer &Lex, CodeGenContext &CG, ModuleSink *Sink = nullptr);
 
   void run();
 
@@ -52,7 +44,6 @@ private:
 
   Lexer &Lex;
   CodeGenContext &CG;
-  llvm::orc::KaleidoscopeJIT *JIT;
-  llvm::ExitOnError ExitOnErr;
+  ModuleSink *Sink;
   int CurTok = 0;
 };

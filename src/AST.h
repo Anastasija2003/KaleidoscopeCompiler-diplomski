@@ -8,20 +8,13 @@
 #include <utility>
 #include <vector>
 
-// Forward-declared instead of #include-d so that AST.h (pulled in by both
-// Parser.h and CodeGen.cpp) doesn't drag the LLVM headers into every
-// translation unit that only wants to parse, not codegen.
 namespace llvm {
 class Value;
 class Function;
-} // namespace llvm
+}
 
 class CodeGenContext;
 
-// ExprAST - Base class for all expression nodes. Every node carries the
-// source position it started at, so CodeGenContext::emitLocation() can
-// attach debug info to the instructions it generates (when debug info is
-// enabled -- see CodeGenContext::enableDebugInfo()).
 class ExprAST {
   SourceLocation Loc;
 
@@ -35,7 +28,6 @@ public:
   int getCol() const { return Loc.Col; }
 };
 
-// NumberExprAST - Expression class for numeric literals like "1.0".
 class NumberExprAST : public ExprAST {
   double Val;
 
@@ -45,7 +37,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// VariableExprAST - Expression class for referencing a variable, like "a".
 class VariableExprAST : public ExprAST {
   std::string Name;
 
@@ -57,7 +48,6 @@ public:
   const std::string &getName() const { return Name; }
 };
 
-// UnaryExprAST - Expression class for a unary operator.
 class UnaryExprAST : public ExprAST {
   char Opcode;
   std::unique_ptr<ExprAST> Operand;
@@ -69,7 +59,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// BinaryExprAST - Expression class for a binary operator.
 class BinaryExprAST : public ExprAST {
   char Op;
   std::unique_ptr<ExprAST> LHS, RHS;
@@ -82,7 +71,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// CallExprAST - Expression class for function calls.
 class CallExprAST : public ExprAST {
   std::string Callee;
   std::vector<std::unique_ptr<ExprAST>> Args;
@@ -95,7 +83,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// IfExprAST - Expression class for if/then/else.
 class IfExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
 
@@ -108,8 +95,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// ForExprAST - Expression class for a 'for var = start, end, step in body'
-// loop.
 class ForExprAST : public ExprAST {
   std::string VarName;
   std::unique_ptr<ExprAST> Start, End, Step, Body;
@@ -124,8 +109,6 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// VarExprAST - Expression class for 'var a = 1, b = 2 in body', which
-// introduces new mutable local variables in scope for Body.
 class VarExprAST : public ExprAST {
   std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
   std::unique_ptr<ExprAST> Body;
@@ -140,17 +123,11 @@ public:
   llvm::Value *codegen(CodeGenContext &CG) override;
 };
 
-// PrototypeAST - Represents the "prototype" for a function: its name, its
-// argument names (which implicitly gives the argument count), and --
-// since a user-defined operator is just a function with a special name
-// ("binary<op>"/"unary<op>") -- whether it's one, and at what precedence.
-// Only tracks a line (not a full SourceLocation) since that's all
-// DISubprogram (see CodeGen.cpp) needs.
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
   bool IsOperator;
-  unsigned Precedence; // Precedence if this is a binary operator.
+  unsigned Precedence;
   int Line;
 
 public:
@@ -176,7 +153,6 @@ public:
   llvm::Function *codegen(CodeGenContext &CG);
 };
 
-// FunctionAST - Represents a function definition itself.
 class FunctionAST {
   std::unique_ptr<PrototypeAST> Proto;
   std::unique_ptr<ExprAST> Body;
