@@ -415,3 +415,36 @@ void Parser::run() {
     }
   }
 }
+
+ParsedProgram Parser::parseProgram() {
+  ParsedProgram Result;
+  getNextToken();
+
+  while (true) {
+    switch (CurTok) {
+    case tok_eof:
+      return Result;
+    case ';':
+      getNextToken();
+      break;
+    case tok_def:
+      if (auto Fn = parseDefinition())
+        Result.Functions.push_back(std::move(Fn));
+      else
+        getNextToken();
+      break;
+    case tok_extern:
+      if (auto Proto = parseExtern())
+        Result.Externs.push_back(std::move(Proto));
+      else
+        getNextToken();
+      break;
+    default:
+      if (auto Fn = parseTopLevelExpr())
+        Result.Functions.push_back(std::move(Fn));
+      else
+        getNextToken();
+      break;
+    }
+  }
+}

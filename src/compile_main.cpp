@@ -1,4 +1,5 @@
 #include "CodeGenContext.h"
+#include "IncrementalDriver.h"
 #include "Lexer.h"
 #include "Parser.h"
 
@@ -19,6 +20,8 @@
 int main(int argc, char **argv) {
   bool EmitDebugInfo = false;
   bool EmitLLVM = false;
+  bool Incremental = false;
+  std::string CacheDir = ".kalcache";
   std::vector<std::string> PositionalArgs;
   for (int i = 1; i < argc; ++i) {
     std::string Arg = argv[i];
@@ -26,8 +29,17 @@ int main(int argc, char **argv) {
       EmitDebugInfo = true;
     else if (Arg == "-emit-llvm")
       EmitLLVM = true;
+    else if (Arg == "--incremental")
+      Incremental = true;
+    else if (Arg == "--cache-dir" && i + 1 < argc)
+      CacheDir = argv[++i];
     else
       PositionalArgs.push_back(Arg);
+  }
+
+  if (Incremental && EmitDebugInfo) {
+    std::cerr << "error: -g is not supported with --incremental\n";
+    return 1;
   }
 
   std::ifstream File;
@@ -69,6 +81,12 @@ int main(int argc, char **argv) {
   Lexer Lex(*Input);
   CodeGenContext CG("kaleidoscope", TheTargetMachine->createDataLayout());
   CG.getModule().setTargetTriple(TargetTriple);
+
+  if (Incremental) {
+    Parser P(Lex, CG);
+    runIncrementalCompile(P, CG, *TheTargetMachine, CacheDir);
+    return 0;
+  }
 
   if (EmitDebugInfo)
     CG.enableDebugInfo(InputPath, ".");

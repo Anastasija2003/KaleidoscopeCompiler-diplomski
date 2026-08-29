@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CanonState.h"
 #include "SourceLocation.h"
 
 #include <cassert>
@@ -23,6 +24,8 @@ public:
   virtual ~ExprAST() = default;
 
   virtual llvm::Value *codegen(CodeGenContext &CG) = 0;
+  virtual std::string canonicalize(CanonState &State) const = 0;
+  virtual void collectCallees(std::vector<std::string> &Callees) const = 0;
 
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
@@ -35,6 +38,8 @@ public:
   NumberExprAST(SourceLocation Loc, double Val) : ExprAST(Loc), Val(Val) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class VariableExprAST : public ExprAST {
@@ -45,6 +50,8 @@ public:
       : ExprAST(Loc), Name(std::move(Name)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
   const std::string &getName() const { return Name; }
 };
 
@@ -57,6 +64,8 @@ public:
       : ExprAST(Loc), Opcode(Opcode), Operand(std::move(Operand)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class BinaryExprAST : public ExprAST {
@@ -69,6 +78,8 @@ public:
       : ExprAST(Loc), Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class CallExprAST : public ExprAST {
@@ -81,6 +92,8 @@ public:
       : ExprAST(Loc), Callee(std::move(Callee)), Args(std::move(Args)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class IfExprAST : public ExprAST {
@@ -93,6 +106,8 @@ public:
         Else(std::move(Else)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class ForExprAST : public ExprAST {
@@ -107,6 +122,8 @@ public:
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class VarExprAST : public ExprAST {
@@ -121,6 +138,8 @@ public:
       : ExprAST(Loc), VarNames(std::move(VarNames)), Body(std::move(Body)) {}
 
   llvm::Value *codegen(CodeGenContext &CG) override;
+  std::string canonicalize(CanonState &State) const override;
+  void collectCallees(std::vector<std::string> &Callees) const override;
 };
 
 class PrototypeAST {
@@ -151,6 +170,7 @@ public:
   int getLine() const { return Line; }
 
   llvm::Function *codegen(CodeGenContext &CG);
+  std::string canonicalize(CanonState &State) const;
 };
 
 class FunctionAST {
@@ -163,4 +183,7 @@ public:
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
 
   llvm::Function *codegen(CodeGenContext &CG);
+  std::string canonicalize() const;
+  std::vector<std::string> collectCallees() const;
+  const std::string &getName() const { return Proto->getName(); }
 };

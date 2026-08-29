@@ -4,6 +4,7 @@
 #include "CodeGenContext.h"
 #include "Lexer.h"
 #include "ModuleSink.h"
+#include "ParsedProgram.h"
 
 #include <memory>
 
@@ -12,6 +13,7 @@ public:
   Parser(Lexer &Lex, CodeGenContext &CG, ModuleSink *Sink = nullptr);
 
   void run();
+  ParsedProgram parseProgram();
 
 private:
   int getNextToken();

@@ -30,11 +30,40 @@ include_directories(${CMAKE_SOURCE_DIR}/jit)
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
 add_definitions(${LLVM_DEFINITIONS_LIST})
 
-llvm_map_components_to_libnames(LLVM_LIBS core orcjit native passes mc target)
+llvm_map_components_to_libnames(LLVM_LIBS core orcjit native passes mc target
+                                 linker bitreader bitwriter)
 
-set(COMMON_SRCS src/Lexer.cpp src/Parser.cpp src/CodeGen.cpp)
-set(COMMON_HDRS src/Lexer.h src/AST.h src/Parser.h src/CodeGenContext.h
-                 src/ModuleSink.h src/SourceLocation.h)
+set(PICOSHA2_HEADER ${CMAKE_BINARY_DIR}/picosha2/picosha2.h)
+if(NOT EXISTS ${PICOSHA2_HEADER})
+  file(DOWNLOAD
+    https://raw.githubusercontent.com/okdshin/PicoSHA2/v1.0.1/picosha2.h
+    ${PICOSHA2_HEADER}
+    EXPECTED_HASH SHA256=b13c180161ffac8d0adc81e033e493c409457c4d1258ab9781ac80579ba3bdd8
+    SHOW_PROGRESS)
+endif()
+include_directories(${CMAKE_BINARY_DIR}/picosha2)
+
+set(NLOHMANN_JSON_HEADER ${CMAKE_BINARY_DIR}/nlohmann_json/nlohmann/json.hpp)
+if(NOT EXISTS ${NLOHMANN_JSON_HEADER})
+  file(DOWNLOAD
+    https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
+    ${NLOHMANN_JSON_HEADER}
+    EXPECTED_HASH SHA256=9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6
+    SHOW_PROGRESS)
+endif()
+include_directories(${CMAKE_BINARY_DIR}/nlohmann_json)
+
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/src)
+set(COMMON_SRCS ${SRC_DIR}/Lexer.cpp ${SRC_DIR}/Parser.cpp ${SRC_DIR}/CodeGen.cpp
+                 ${SRC_DIR}/Canonicalize.cpp ${SRC_DIR}/CallGraph.cpp
+                 ${SRC_DIR}/FunctionHasher.cpp ${SRC_DIR}/FunctionCache.cpp
+                 ${SRC_DIR}/DirtySet.cpp ${SRC_DIR}/IncrementalDriver.cpp)
+set(COMMON_HDRS ${SRC_DIR}/Lexer.h ${SRC_DIR}/AST.h ${SRC_DIR}/Parser.h
+                 ${SRC_DIR}/CodeGenContext.h ${SRC_DIR}/ModuleSink.h
+                 ${SRC_DIR}/SourceLocation.h ${SRC_DIR}/CanonState.h
+                 ${SRC_DIR}/CallGraph.h ${SRC_DIR}/FunctionHasher.h
+                 ${SRC_DIR}/ParsedProgram.h ${SRC_DIR}/FunctionCache.h
+                 ${SRC_DIR}/DirtySet.h ${SRC_DIR}/IncrementalDriver.h)
 
 set(JIT_SRCS jit/main.cpp jit/JITModuleSink.cpp)
 set(JIT_HDRS jit/KaleidoscopeJIT.h jit/JITModuleSink.h)
