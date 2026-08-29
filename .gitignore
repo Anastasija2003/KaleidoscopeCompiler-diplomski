@@ -13,3 +13,4 @@ compile_commands.json
 
 # OS cruft
 .DS_Store
+*.md
