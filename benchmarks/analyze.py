@@ -19,6 +19,8 @@ INK = "#0b0b0b"
 MUTED = "#898781"
 GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
+STATUS_GOOD = "#0ca30c"
+STATUS_CRITICAL = "#d03b3b"
 
 
 def load_rows(path):
@@ -80,6 +82,16 @@ def plot_speedup(rows, sizes, out_path):
         ax.set_title(f"{size} funkcija", color=INK, fontsize=11)
         ax.set_xlabel("broj izmenjenih funkcija", color=MUTED, fontsize=9)
 
+    ymin, ymax = axes[0].get_ylim()
+    for ax in axes:
+        ax.axhspan(1.0, ymax, color=STATUS_GOOD, alpha=0.06, zorder=0)
+        ax.axhspan(ymin, 1.0, color=STATUS_CRITICAL, alpha=0.06, zorder=0)
+    axes[0].set_ylim(ymin, ymax)
+
+    axes[0].text(0.02, 0.97, "brže od baseline-a", transform=axes[0].transAxes,
+                 color=STATUS_GOOD, fontsize=8, va="top", ha="left")
+    axes[0].text(0.02, 0.03, "sporije od baseline-a", transform=axes[0].transAxes,
+                 color=STATUS_CRITICAL, fontsize=8, va="bottom", ha="left")
     axes[0].set_ylabel("ubrzanje (baseline / inkrementalno)", color=INK, fontsize=9)
     shared_legend(fig, axes)
     fig.tight_layout()
@@ -159,6 +171,41 @@ def plot_absolute_time(rows, sizes, out_path):
     plt.close(fig)
 
 
+def plot_practical_case(rows, sizes, out_path, num_changes=1):
+    idx = index_rows(rows)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    fig.patch.set_facecolor(SURFACE)
+    style_axes(ax)
+
+    n_topo = len(TOPOLOGY_ORDER)
+    width = 0.8 / n_topo
+    x = list(range(len(sizes)))
+
+    for i, topo in enumerate(TOPOLOGY_ORDER):
+        ys = []
+        for size in sizes:
+            baseline = idx[(topo, size, "baseline", 0)]["time_s"]
+            row = idx.get((topo, size, "incremental_warm", num_changes))
+            ys.append(baseline / row["time_s"] if row else 0)
+        offsets = [xi + (i - (n_topo - 1) / 2) * width for xi in x]
+        ax.bar(offsets, ys, width=width * 0.9, color=TOPOLOGY_COLORS[topo], label=topo)
+
+    ymin, ymax = ax.get_ylim()
+    ax.axhspan(1.0, max(ymax, 1.05), color=STATUS_GOOD, alpha=0.06, zorder=0)
+    ax.axhspan(0, 1.0, color=STATUS_CRITICAL, alpha=0.06, zorder=0)
+    ax.set_ylim(0, max(ymax, 1.05))
+    ax.axhline(1.0, color=MUTED, linewidth=1, linestyle="--")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{s} funkcija" for s in sizes], color=INK, fontsize=9)
+    ax.set_ylabel("ubrzanje (baseline / inkrementalno)", color=INK, fontsize=9)
+    ax.set_title(f"Tipičan slučaj: {num_changes} izmenjena funkcija", color=INK, fontsize=11)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_baseline_scaling(rows, out_path):
     idx = index_rows(rows)
     sizes = sorted({r["size"] for r in rows})
@@ -197,6 +244,7 @@ def main():
     plot_dirty_fraction(rows, sizes, os.path.join(args.outdir, "dirty_fraction.png"))
     plot_baseline_scaling(rows, os.path.join(args.outdir, "baseline_scaling.png"))
     plot_absolute_time(rows, sizes, os.path.join(args.outdir, "absolute_time.png"))
+    plot_practical_case(rows, sizes, os.path.join(args.outdir, "practical_case.png"))
 
     print(f"Wrote graphs to {args.outdir}/", file=sys.stderr)
 
