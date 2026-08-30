@@ -133,38 +133,46 @@ def plot_dirty_fraction(rows, sizes, out_path):
 
 def plot_absolute_time(rows, sizes, out_path):
     idx = index_rows(rows)
-    fig, axes = plt.subplots(1, len(sizes), figsize=(4.5 * len(sizes), 4))
-    fig.patch.set_facecolor(SURFACE)
-    axes = list(axes) if len(sizes) > 1 else [axes]
+    fig, axes = plt.subplots(len(TOPOLOGY_ORDER), len(sizes),
+                              figsize=(3.6 * len(sizes), 2.6 * len(TOPOLOGY_ORDER)))
 
-    for ax, size in zip(axes, sizes):
-        style_axes(ax)
-        ax.set_yscale("log")
-        for topo in TOPOLOGY_ORDER:
+    fig.patch.set_facecolor(SURFACE)
+
+    for row, topo in enumerate(TOPOLOGY_ORDER):
+        for col, size in enumerate(sizes):
+            ax = axes[row][col]
+            style_axes(ax)
             baseline = idx[(topo, size, "baseline", 0)]["time_s"]
             changes = sorted({r["num_changes"] for r in rows
                                if r["topology"] == topo and r["mode"] == "incremental_warm"
                                and r["size"] == size})
             xs, ys = [], []
             for nc in changes:
-                row = idx.get((topo, size, "incremental_warm", nc))
-                if row is None:
+                r = idx.get((topo, size, "incremental_warm", nc))
+                if r is None:
                     continue
                 xs.append(nc)
-                ys.append(row["time_s"])
-            ax.plot(xs, ys, marker="o", markersize=6, linewidth=2,
-                    color=TOPOLOGY_COLORS[topo], label=f"{topo} (inkrementalno)")
-            ax.axhline(baseline, color=TOPOLOGY_COLORS[topo], linewidth=1.5,
-                       linestyle="--", alpha=0.6)
-        ax.set_title(f"{size} funkcija", color=INK, fontsize=11)
-        ax.set_xlabel("broj izmenjenih funkcija", color=MUTED, fontsize=9)
+                ys.append(r["time_s"])
+            ax.plot(xs, ys, marker="o", markersize=5, linewidth=2,
+                    color=TOPOLOGY_COLORS[topo])
+            ax.axhline(baseline, color=MUTED, linewidth=1.3, linestyle="--")
 
-    axes[0].set_ylabel("vreme (s, log skala)", color=INK, fontsize=9)
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False,
-               bbox_to_anchor=(0.5, 1.1), fontsize=8, labelcolor=INK)
-    fig.text(0.5, -0.02,
-              "isprekidana linija = baseline (puna kompilacija) za tu topologiju",
+            ymin, ymax = min(ys + [baseline]), max(ys + [baseline])
+            pad = max((ymax - ymin) * 0.25, ymax * 0.05)
+            ax.set_ylim(ymin - pad, ymax + pad)
+
+            if row == 0:
+                ax.set_title(f"{size} funkcija", color=INK, fontsize=11)
+            if col == 0:
+                ax.set_ylabel(topo, color=TOPOLOGY_COLORS[topo], fontsize=10,
+                              fontweight="bold")
+            if row == len(TOPOLOGY_ORDER) - 1:
+                ax.set_xlabel("broj izmenjenih funkcija", color=MUTED, fontsize=8)
+            ax.tick_params(labelsize=7)
+
+    fig.text(0.5, -0.01,
+              "isprekidana siva linija = baseline (puna kompilacija) za taj panel — "
+              "svaki red ima SVOJU y-osu",
               ha="center", color=MUTED, fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
