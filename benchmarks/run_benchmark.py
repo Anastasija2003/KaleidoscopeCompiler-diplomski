@@ -3,6 +3,7 @@ import argparse
 import csv
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -29,6 +30,15 @@ def run_python(script, *cmd_args):
                     check=True, capture_output=True)
 
 
+def median_timed(cmd, repeats):
+    times = []
+    output = ""
+    for _ in range(repeats):
+        elapsed, output = run_timed(cmd)
+        times.append(elapsed)
+    return statistics.median(times), output
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kcc", required=True)
@@ -38,6 +48,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", default="results.csv")
     parser.add_argument("--workdir", default="bench_work")
+    parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
 
     sizes = [int(s) for s in args.sizes.split(",")]
@@ -59,16 +70,22 @@ def main():
                         "--out", str(base_ks))
 
             baseline_o = workdir / f"{topology}_{size}_baseline.o"
-            elapsed, _ = run_timed([args.kcc, str(base_ks), str(baseline_o)])
+            elapsed, _ = median_timed([args.kcc, str(base_ks), str(baseline_o)], args.repeats)
             rows.append({"topology": topology, "size": size, "mode": "baseline",
                          "num_changes": 0, "time_s": elapsed, "dirty": size, "reused": 0})
 
             cache_dir = workdir / f"{topology}_{size}_cache"
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir)
-            elapsed, output = run_timed(
-                [args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(base_ks)])
-            m = DIRTY_RE.search(output)
+
+            cold_times = []
+            cold_output = ""
+            for _ in range(args.repeats):
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+                t, cold_output = run_timed(
+                    [args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(base_ks)])
+                cold_times.append(t)
+            elapsed = statistics.median(cold_times)
+            m = DIRTY_RE.search(cold_output)
             dirty, reused = (int(m.group(1)), int(m.group(2))) if m else (size, 0)
             rows.append({"topology": topology, "size": size, "mode": "incremental_cold",
                          "num_changes": 0, "time_s": elapsed, "dirty": dirty, "reused": reused})
@@ -84,15 +101,20 @@ def main():
                             "--target", "random",
                             "--seed", str(args.seed))
 
-                elapsed, output = run_timed(
-                    [args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(mutated_ks)])
-                m = DIRTY_RE.search(output)
+                warm_times = []
+                warm_output = ""
+                for _ in range(args.repeats):
+                    t, warm_output = run_timed(
+                        [args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(mutated_ks)])
+                    warm_times.append(t)
+                    run_timed(
+                        [args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(base_ks)])
+                elapsed = statistics.median(warm_times)
+                m = DIRTY_RE.search(warm_output)
                 dirty, reused = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
                 rows.append({"topology": topology, "size": size, "mode": "incremental_warm",
                              "num_changes": num_changes, "time_s": elapsed,
                              "dirty": dirty, "reused": reused})
-
-                run_timed([args.kcc, "--incremental", "--cache-dir", str(cache_dir), str(base_ks)])
 
             print(f"done: {topology} x {size}", file=sys.stderr)
 
