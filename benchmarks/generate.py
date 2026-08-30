@@ -16,14 +16,11 @@ def gen_hub(n, rng, density):
 
 
 def gen_random_dag(n, rng, density):
+    window = 20
     edges = []
     for i in range(n):
-        if i == 0:
-            edges.append((i, []))
-            continue
-        candidates = list(range(i))
-        k = max(0, min(len(candidates), round(density * len(candidates))))
-        callees = sorted(rng.sample(candidates, k)) if k > 0 else []
+        candidates = list(range(max(0, i - window), i))
+        callees = sorted(j for j in candidates if rng.random() < density)
         edges.append((i, callees))
     return edges
 
