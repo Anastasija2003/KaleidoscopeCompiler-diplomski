@@ -11,6 +11,10 @@ CMakeFiles/
 CMakeCache.txt
 compile_commands.json
 
+# Python
+__pycache__/
+*.pyc
+
 # OS cruft
 .DS_Store
 *.md
